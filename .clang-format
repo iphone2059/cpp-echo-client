@@ -1,0 +1,11 @@
+---
+Language: Cpp
+BasedOnStyle: Microsoft
+ColumnLimit: 120
+IndentWidth: 4
+PointerAlignment: Left
+ReferenceAlignment: Left
+SortIncludes: Never
+Standard: Latest
+UseTab: Never
+...
