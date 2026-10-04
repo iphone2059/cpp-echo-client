@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 static constexpr std::uint32_t cec_timer_absent = UINT32_MAX;
@@ -312,16 +313,40 @@ bool cec_notification_packet_matches(ULONG_PTR         key,
 bool cec_timer_initialize(cec_timer_heap* heap,
                           cec_timer_node* nodes,
                           std::uint32_t*  positions,
-                          std::uint32_t   capacity) noexcept {
-    if (heap == nullptr || nodes == nullptr || positions == nullptr || capacity == 0) {
+                          std::uint32_t   capacity,
+                          ULONGLONG       ticks_per_second) noexcept {
+    if (heap == nullptr || nodes == nullptr || positions == nullptr || capacity == 0 || ticks_per_second == 0) {
         return false;
     }
-    heap->nodes     = nodes;
-    heap->positions = positions;
-    heap->size      = 0;
-    heap->capacity  = capacity;
+    heap->nodes            = nodes;
+    heap->positions        = positions;
+    heap->size             = 0;
+    heap->capacity         = capacity;
+    heap->ticks_per_second = ticks_per_second;
     std::fill_n(positions, capacity, cec_timer_absent);
     return true;
+}
+
+ULONGLONG cec_timer_deadline_after_milliseconds(ULONGLONG now,
+                                                ULONGLONG milliseconds,
+                                                ULONGLONG ticks_per_second) noexcept {
+    if (ticks_per_second == 0) {
+        cec_engine_fail_fast(L"client timer frequency", ERROR_INVALID_DATA);
+    }
+    const ULONGLONG maximum = std::numeric_limits<ULONGLONG>::max();
+    const ULONGLONG seconds = milliseconds / 1000ULL;
+    if (seconds > (maximum - now) / ticks_per_second) {
+        return maximum;
+    }
+    const ULONGLONG whole_ticks = seconds * ticks_per_second;
+    const ULONGLONG remainder   = milliseconds % 1000ULL;
+    // Split the frequency before multiplication; even very large frequencies cannot wrap.
+    const ULONGLONG fractional_ticks =
+        remainder * (ticks_per_second / 1000ULL) + (remainder * (ticks_per_second % 1000ULL) + 999ULL) / 1000ULL;
+    if (fractional_ticks > maximum - now - whole_ticks) {
+        return maximum;
+    }
+    return now + whole_ticks + fractional_ticks;
 }
 
 bool cec_timer_insert_or_update(cec_timer_heap* heap, std::uint32_t session_index, ULONGLONG deadline) noexcept {
@@ -388,7 +413,37 @@ DWORD cec_timer_wait_milliseconds(const cec_timer_heap* heap, ULONGLONG now) noe
     if (deadline <= now) {
         return 0;
     }
-    return static_cast<DWORD>(std::min(deadline - now, static_cast<ULONGLONG>(INFINITE) - 1ULL));
+    const ULONGLONG frequency = heap->ticks_per_second;
+    if (frequency == 0) {
+        cec_engine_fail_fast(L"client timer frequency", ERROR_INVALID_DATA);
+    }
+    const ULONGLONG remaining    = deadline - now;
+    const ULONGLONG seconds      = remaining / frequency;
+    const ULONGLONG maximum_wait = static_cast<ULONGLONG>(INFINITE) - 1ULL;
+    if (seconds > maximum_wait / 1000ULL) {
+        return static_cast<DWORD>(maximum_wait);
+    }
+    const ULONGLONG remainder               = remaining % frequency;
+    ULONGLONG       fractional_milliseconds = 0;
+    if (remainder <= std::numeric_limits<ULONGLONG>::max() / 1000ULL) {
+        const ULONGLONG scaled  = remainder * 1000ULL;
+        fractional_milliseconds = scaled / frequency + (scaled % frequency != 0 ? 1ULL : 0ULL);
+    } else {
+        // Find ceil(remainder * 1000 / frequency) without forming the overflowing product.
+        ULONGLONG lower = 1;
+        ULONGLONG upper = 1000;
+        while (lower < upper) {
+            const ULONGLONG middle = lower + (upper - lower) / 2ULL;
+            const ULONGLONG ticks  = middle * (frequency / 1000ULL) + middle * (frequency % 1000ULL) / 1000ULL;
+            if (ticks < remainder) {
+                lower = middle + 1ULL;
+            } else {
+                upper = middle;
+            }
+        }
+        fractional_milliseconds = lower;
+    }
+    return static_cast<DWORD>(std::min(seconds * 1000ULL + fractional_milliseconds, maximum_wait));
 }
 
 void cec_fill_repeated_pattern(std::byte*       destination,

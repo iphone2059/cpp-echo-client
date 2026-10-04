@@ -26,7 +26,7 @@ cec_apply_constraints(cpp-echo-client-fault-driver)
 
 add_executable(cpp-echo-client src/main.cpp src/cec_contract.cpp src/cec_engine.cpp src/cec_engine_internal.cpp)
 target_include_directories(cpp-echo-client PRIVATE include)
-target_link_libraries(cpp-echo-client PRIVATE ws2_32)
+target_link_libraries(cpp-echo-client PRIVATE ws2_32 winmm)
 cec_apply_constraints(cpp-echo-client)
 
 enable_testing()

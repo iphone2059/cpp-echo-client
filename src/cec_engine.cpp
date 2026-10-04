@@ -7,6 +7,7 @@
 #include <MSWSock.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
+#include <mmsystem.h>
 // clang-format on
 
 #include <algorithm>
@@ -23,10 +24,12 @@
 class cec_engine_winsock {
   public:
     bool started = false;
+    int  error   = ERROR_SUCCESS;
 
     bool start() noexcept {
         WSADATA data{};
-        started = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+        error   = WSAStartup(MAKEWORD(2, 2), &data);
+        started = error == ERROR_SUCCESS;
         return started;
     }
 
@@ -37,8 +40,28 @@ class cec_engine_winsock {
     }
 };
 
-static constexpr ULONG_PTR cec_engine_stop_key   = 1U;
-static constexpr ULONG     cec_engine_batch_size = 256U;
+class cec_engine_timer_resolution {
+  public:
+    bool     active = false;
+    MMRESULT error  = TIMERR_NOERROR;
+
+    bool start() noexcept {
+        error  = timeBeginPeriod(1U);
+        active = error == TIMERR_NOERROR;
+        return active;
+    }
+
+    ~cec_engine_timer_resolution() noexcept {
+        if (active) {
+            (void) timeEndPeriod(1U);
+        }
+    }
+};
+
+static constexpr ULONG_PTR     cec_engine_stop_key                             = 1U;
+static constexpr ULONG         cec_engine_batch_size                           = 256U;
+static constexpr std::uint32_t cec_engine_max_drain_batches                    = 64U;
+static constexpr ULONGLONG     cec_engine_notification_retirement_milliseconds = 5000ULL;
 
 static void cec_engine_report(const wchar_t* stage, int error) noexcept {
     std::fwprintf(stderr, L"%ls failed: native_error=%d\n", stage, error);
@@ -142,7 +165,8 @@ static std::byte* cec_engine_build_pattern(const cec_options* options,
     std::array<wchar_t, 512> default_pattern{};
     const wchar_t*           text = options->literal_pattern;
     if (text[0] == L'\0') {
-        _snwprintf_s(default_pattern.data(), default_pattern.size(), _TRUNCATE, L"C++ echo from %ls", options->host);
+        _snwprintf_s(default_pattern.data(), default_pattern.size(), _TRUNCATE, CEC_DEFAULT_PATTERN_FORMAT,
+                     options->host);
         text = default_pattern.data();
     }
     const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, nullptr, 0, nullptr, nullptr);
@@ -183,6 +207,18 @@ static void cec_engine_arm(cec_engine_worker* worker) noexcept {
     }
 }
 
+static ULONGLONG cec_engine_now() noexcept {
+    LARGE_INTEGER value{};
+    if (QueryPerformanceCounter(&value) == FALSE) {
+        cec_engine_fail_fast(L"QueryPerformanceCounter(client timer)", static_cast<int>(GetLastError()));
+    }
+    return static_cast<ULONGLONG>(value.QuadPart);
+}
+
+static ULONGLONG cec_engine_deadline_after(const cec_engine_worker* worker, ULONGLONG milliseconds) noexcept {
+    return cec_timer_deadline_after_milliseconds(cec_engine_now(), milliseconds, worker->timers.ticks_per_second);
+}
+
 static void cec_engine_schedule(cec_engine_session* session, ULONGLONG deadline) noexcept {
     if (!cec_timer_insert_or_update(&session->owner->timers, session->index, deadline)) {
         cec_engine_fail_fast(L"client timer insert/update", ERROR_INVALID_DATA);
@@ -205,9 +241,9 @@ static void cec_engine_mark_done(cec_engine_session* session) noexcept {
 
 static void cec_engine_finish_close(cec_engine_session* session) noexcept {
     if (session->reconnect_after_close && !session->owner->stopping) {
-        session->state = cec_engine_state::reconnecting;
-        session->next_action =
-            GetTickCount64() + static_cast<ULONGLONG>(session->owner->options->reconnect_seconds) * 1000ULL;
+        session->state       = cec_engine_state::reconnecting;
+        session->next_action = cec_engine_deadline_after(
+            session->owner, static_cast<ULONGLONG>(session->owner->options->reconnect_seconds) * 1000ULL);
         cec_engine_schedule(session, session->next_action);
     } else {
         cec_engine_mark_done(session);
@@ -216,7 +252,8 @@ static void cec_engine_finish_close(cec_engine_session* session) noexcept {
 
 static bool cec_engine_create_request_queue(cec_engine_session* session) noexcept {
     session->request_queue = session->owner->rio->RIOCreateRequestQueue(
-        session->socket, 1, 1, 1, 1, session->owner->completion_queue, session->owner->completion_queue, session);
+        session->socket, CEC_RIO_MAX_OUTSTANDING_RECEIVES, 1U, CEC_RIO_MAX_OUTSTANDING_SENDS, 1U,
+        session->owner->completion_queue, session->owner->completion_queue, session);
     if (session->request_queue == RIO_INVALID_RQ) {
         cec_engine_report(L"RIOCreateRequestQueue(client)", WSAGetLastError());
         return false;
@@ -288,7 +325,8 @@ static bool cec_engine_begin_attempt(cec_engine_session* session) noexcept {
     session->attempt_accounted = false;
     session->state             = cec_engine_state::active;
     QueryPerformanceCounter(&session->started_at);
-    session->deadline = GetTickCount64() + static_cast<ULONGLONG>(session->owner->options->timeout_seconds) * 1000ULL;
+    session->deadline = cec_engine_deadline_after(
+        session->owner, static_cast<ULONGLONG>(session->owner->options->timeout_seconds) * 1000ULL);
     cec_engine_schedule(session, session->deadline);
     if (!cec_engine_post_receive(session)) {
         return false;
@@ -334,7 +372,8 @@ static bool cec_engine_start_socket(cec_engine_session* session) noexcept {
     }
     std::memset(&session->connect_overlapped, 0, sizeof(session->connect_overlapped));
     session->state    = cec_engine_state::connecting;
-    session->deadline = GetTickCount64() + static_cast<ULONGLONG>(session->owner->options->timeout_seconds) * 1000ULL;
+    session->deadline = cec_engine_deadline_after(
+        session->owner, static_cast<ULONGLONG>(session->owner->options->timeout_seconds) * 1000ULL);
     cec_engine_schedule(session, session->deadline);
     ++session->outstanding;
     const BOOL connected = session->owner->connect_ex(
@@ -362,10 +401,10 @@ static void cec_engine_complete_attempt(cec_engine_session* session) noexcept {
     if (!session->send_done || !session->receive_done || session->outstanding != 0) {
         return;
     }
-    const char*   send_data    = session->owner->memory + session->index * 2U * session->owner->maximum_attempt_bytes;
-    const char*   receive_data = send_data + session->owner->maximum_attempt_bytes;
-    const bool    equal        = session->received_bytes == session->attempt_bytes &&
-                                 std::memcmp(send_data, receive_data, session->attempt_bytes) == 0;
+    const char* send_data    = session->owner->memory + session->index * 2U * session->owner->maximum_attempt_bytes;
+    const char* receive_data = send_data + session->owner->maximum_attempt_bytes;
+    const bool  equal        = session->received_bytes == session->attempt_bytes &&
+                       std::memcmp(send_data, receive_data, session->attempt_bytes) == 0;
     LARGE_INTEGER finish{};
     QueryPerformanceCounter(&finish);
     cec_engine_record_latency(session->owner->metrics, session->started_at, finish,
@@ -378,8 +417,9 @@ static void cec_engine_complete_attempt(cec_engine_session* session) noexcept {
     }
     session->attempt_accounted = true;
     if (session->owner->options->interval_milliseconds != 0) {
-        session->state       = cec_engine_state::pacing;
-        session->next_action = GetTickCount64() + session->owner->options->interval_milliseconds;
+        session->state = cec_engine_state::pacing;
+        session->next_action =
+            cec_engine_deadline_after(session->owner, session->owner->options->interval_milliseconds);
         cec_engine_schedule(session, session->next_action);
     } else if (!cec_engine_begin_attempt(session)) {
         cec_engine_connection_failed(session);
@@ -438,7 +478,7 @@ static void cec_engine_process_rio_result(cec_engine_worker* worker, const RIORE
 
 static void cec_engine_drain(cec_engine_worker* worker) noexcept {
     std::array<RIORESULT, cec_engine_batch_size> results{};
-    for (;;) {
+    for (std::uint32_t batch = 0; batch < cec_engine_max_drain_batches; ++batch) {
         const ULONG count =
             cec_require_valid_dequeue_count(worker->rio->RIODequeueCompletion(worker->completion_queue, results.data(),
                                                                               static_cast<ULONG>(results.size())),
@@ -475,7 +515,7 @@ static void cec_engine_process_connect(cec_engine_session* session, BOOL complet
 }
 
 static void cec_engine_process_deadlines(cec_engine_worker* worker) noexcept {
-    const ULONGLONG now   = GetTickCount64();
+    const ULONGLONG now   = cec_engine_now();
     std::uint32_t   index = 0;
     while (cec_timer_pop_expired(&worker->timers, now, &index)) {
         cec_engine_session* session = &worker->sessions[index];
@@ -532,7 +572,7 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
         DWORD       transferred       = 0;
         ULONG_PTR   key               = 0;
         OVERLAPPED* overlapped        = nullptr;
-        const DWORD wait_milliseconds = cec_timer_wait_milliseconds(&worker->timers, GetTickCount64());
+        const DWORD wait_milliseconds = cec_timer_wait_milliseconds(&worker->timers, cec_engine_now());
         const BOOL  ok    = GetQueuedCompletionStatus(worker->port, &transferred, &key, &overlapped, wait_milliseconds);
         const DWORD error = ok == FALSE ? GetLastError() : ERROR_SUCCESS;
         if (overlapped == &worker->notification_overlapped) {
@@ -548,6 +588,7 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
                 cec_engine_fail_fast(L"client notification delivery transition", ERROR_INVALID_STATE);
             }
             cec_engine_drain(worker);
+            // A bounded drain may leave results queued; rearm also notifies an already nonempty CQ.
             cec_engine_arm(worker);
         } else if (overlapped == nullptr && key == cec_engine_stop_key) {
             cec_engine_stop_worker(worker);
@@ -582,7 +623,7 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
         // The port queue is FIFO, so a completion that raced the shutdown (a real RIONotify
         // delivery, a stop packet, or a residual ConnectEx result) can precede the packet just
         // posted. Drain until the notification itself is retired instead of assuming order.
-        const ULONGLONG deadline = GetTickCount64() + 1000U;
+        const ULONGLONG deadline = GetTickCount64() + cec_engine_notification_retirement_milliseconds;
         bool            retired  = false;
         while (!retired) {
             const ULONGLONG now       = GetTickCount64();
@@ -645,8 +686,9 @@ static bool cec_engine_worker_initialize(cec_engine_worker*                  wor
     }
     worker->port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
     resources->port.reset(worker->port);
-    std::size_t arena_bytes = 0;
-    if (worker->port == nullptr || options->cq_capacity < session_count * 2U ||
+    constexpr std::uint32_t operations_per_session = CEC_RIO_MAX_OUTSTANDING_RECEIVES + CEC_RIO_MAX_OUTSTANDING_SENDS;
+    std::size_t             arena_bytes            = 0;
+    if (worker->port == nullptr || session_count > options->cq_capacity / operations_per_session ||
         !cec_checked_storage_bytes(session_count, maximum_attempt_bytes, memory_share, &arena_bytes) ||
         arena_bytes > std::numeric_limits<DWORD>::max()) {
         cec_engine_report(L"client worker IOCP/CQ/arena capacity", ERROR_NOT_ENOUGH_MEMORY);
@@ -674,7 +716,8 @@ static bool cec_engine_worker_initialize(cec_engine_worker*                  wor
     }
     if (worker->memory == nullptr || worker->sessions == nullptr || worker->timer_nodes == nullptr ||
         worker->timer_positions == nullptr || !resources->session_sockets ||
-        !cec_timer_initialize(&worker->timers, worker->timer_nodes, worker->timer_positions, session_count)) {
+        !cec_timer_initialize(&worker->timers, worker->timer_nodes, worker->timer_positions, session_count,
+                              static_cast<ULONGLONG>(worker->performance_frequency.QuadPart))) {
         cec_engine_report(L"client worker allocation", ERROR_NOT_ENOUGH_MEMORY);
         return false;
     }
@@ -824,7 +867,7 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
     }
     cec_engine_winsock winsock{};
     if (!winsock.start()) {
-        cec_engine_report(L"WSAStartup", WSAGetLastError());
+        cec_engine_report(L"WSAStartup", winsock.error);
         return cec_exit_code::network;
     }
     RIO_EXTENSION_FUNCTION_TABLE rio{};
@@ -856,6 +899,12 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
                                    &total_storage)) {
         cec_engine_report(L"registered storage /memory limit", ERROR_NOT_ENOUGH_MEMORY);
         return cec_exit_code::usage;
+    }
+
+    cec_engine_timer_resolution timer_resolution{};
+    if (options->interval_milliseconds != 0 && !timer_resolution.start()) {
+        cec_engine_report(L"timeBeginPeriod(client pacing)", static_cast<int>(timer_resolution.error));
+        return cec_exit_code::network;
     }
 
     const std::uint32_t worker_count = cec_resolve_worker_count(options);

@@ -27,6 +27,7 @@ struct cec_worker_lifecycle {
 };
 
 struct cec_timer_node {
+    // Deadlines and the matching "now" use the heap's ticks_per_second.
     ULONGLONG     deadline;
     std::uint32_t session_index;
 };
@@ -36,6 +37,7 @@ struct cec_timer_heap {
     std::uint32_t*  positions;
     std::uint32_t   size;
     std::uint32_t   capacity;
+    ULONGLONG       ticks_per_second;
 };
 
 enum class cec_engine_operation : std::uint8_t { receive, send };
@@ -259,7 +261,11 @@ bool              cec_notification_packet_matches(ULONG_PTR         key,
 bool              cec_timer_initialize(cec_timer_heap* heap,
                                        cec_timer_node* nodes,
                                        std::uint32_t*  positions,
-                                       std::uint32_t   capacity) noexcept;
+                                       std::uint32_t   capacity,
+                                       ULONGLONG       ticks_per_second = 1000ULL) noexcept;
+ULONGLONG         cec_timer_deadline_after_milliseconds(ULONGLONG now,
+                                                        ULONGLONG milliseconds,
+                                                        ULONGLONG ticks_per_second) noexcept;
 bool  cec_timer_insert_or_update(cec_timer_heap* heap, std::uint32_t session_index, ULONGLONG deadline) noexcept;
 bool  cec_timer_remove(cec_timer_heap* heap, std::uint32_t session_index) noexcept;
 bool  cec_timer_pop_expired(cec_timer_heap* heap, ULONGLONG now, std::uint32_t* session_index) noexcept;

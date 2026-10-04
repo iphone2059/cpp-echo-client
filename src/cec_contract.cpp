@@ -3,6 +3,7 @@
 #include <string>
 
 #include <algorithm>
+#include <array>
 #include <cwchar>
 #include <limits>
 #include <string_view>
@@ -114,27 +115,27 @@ bool cec_parse_options(int             argc,
         return false;
     }
     *options           = cec_options{ cec_protocol::none,
-                                      cec_pattern_kind::default_text,
+                            cec_pattern_kind::default_text,
                                       {},
                                       {},
-                                      static_cast<std::uint16_t>(CEC_DEFAULT_PORT),
-                                      0,
-                                      CEC_DEFAULT_COUNT,
-                                      CEC_DEFAULT_TIMEOUT_SECONDS,
-                                      0,
-                                      0,
-                                      1,
-                                      0,
-                                      0,
-                                      -1,
-                                      0,
-                                      1,
-                                      0,
-                                      CEC_DEFAULT_CQ_CAPACITY,
-                                      CEC_DEFAULT_MEMORY_BYTES,
-                                      false,
-                                      false,
-                                      false };
+                            static_cast<std::uint16_t>(CEC_DEFAULT_PORT),
+                            0,
+                            CEC_DEFAULT_COUNT,
+                            CEC_DEFAULT_TIMEOUT_SECONDS,
+                            0,
+                            0,
+                            1,
+                            0,
+                            0,
+                            -1,
+                            0,
+                            1,
+                            0,
+                            CEC_DEFAULT_CQ_CAPACITY,
+                            CEC_DEFAULT_MEMORY_BYTES,
+                            false,
+                            false,
+                            false };
     bool saw_host      = false;
     bool saw_pipeline  = false;
     bool saw_literal   = false;
@@ -242,7 +243,7 @@ bool cec_parse_options(int             argc,
             options->report_seconds = static_cast<std::uint32_t>(number);
         } else if (cec_contract_equal(name, L"c") && number >= 1 && number <= 1048576) {
             options->session_count = static_cast<std::uint32_t>(number);
-        } else if (cec_contract_equal(name, L"threads") && number <= 64) {
+        } else if (cec_contract_equal(name, L"threads") && number <= CEC_MAX_WORKERS) {
             options->worker_count = static_cast<std::uint32_t>(number);
         } else if (cec_contract_equal(name, L"cq") && number >= 64 && number <= 1048576) {
             options->cq_capacity = static_cast<std::uint32_t>(number);
@@ -262,13 +263,6 @@ bool cec_parse_options(int             argc,
         cec_contract_error(error, error_capacity, L"echo count multiplied by sessions exceeds the finite quota limit");
         return false;
     }
-    if (options->help) {
-        return true;
-    }
-    if (!saw_host || options->protocol == cec_protocol::none) {
-        cec_contract_error(error, error_capacity, L"target host and /p tcp or /p udp are required");
-        return false;
-    }
     if (static_cast<unsigned>(saw_literal) + static_cast<unsigned>(saw_binary) + static_cast<unsigned>(saw_printable) >
         1U) {
         cec_contract_error(error, error_capacity, L"use exactly one of /d, /z, or /zt");
@@ -282,40 +276,82 @@ bool cec_parse_options(int             argc,
         cec_contract_error(error, error_capacity, L"TCP reconnect cannot use a fixed /l port");
         return false;
     }
-    if (options->protocol == cec_protocol::udp && options->pattern_bytes > CEC_MAXIMUM_UDP_PAYLOAD_BYTES) {
+    std::size_t pattern_bytes = options->pattern_bytes;
+    if (options->pattern_kind == cec_pattern_kind::literal_text ||
+        (options->pattern_kind == cec_pattern_kind::default_text && saw_host)) {
+        std::array<wchar_t, 512> default_pattern{};
+        const wchar_t*           text = options->literal_pattern;
+        if (options->pattern_kind == cec_pattern_kind::default_text) {
+            const int characters = _snwprintf_s(default_pattern.data(), default_pattern.size(), _TRUNCATE,
+                                                CEC_DEFAULT_PATTERN_FORMAT, options->host);
+            if (characters < 0) {
+                cec_contract_error(error, error_capacity, L"default payload text exceeds its buffer");
+                return false;
+            }
+            text = default_pattern.data();
+        }
+        const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, nullptr, 0, nullptr, nullptr);
+        if (bytes <= 1) {
+            cec_contract_error(error, error_capacity, L"payload text must be non-empty valid UTF-16");
+            return false;
+        }
+        pattern_bytes = static_cast<std::size_t>(bytes - 1);
+    }
+    // Each worker has its own CQ and registered arena. Validate its largest shard.
+    const std::uint32_t worker_count    = cec_resolve_worker_count(options);
+    const std::uint32_t worker_sessions = (options->session_count + worker_count - 1U) / worker_count;
+    if (options->protocol == cec_protocol::udp && pattern_bytes > CEC_MAXIMUM_UDP_PAYLOAD_BYTES) {
         cec_contract_error(error, error_capacity, L"UDP payload must not exceed 65507 bytes");
         return false;
     }
-    if (options->pattern_bytes != 0) {
+    if (pattern_bytes != 0) {
         std::size_t batch_bytes = 0;
-        if (!cec_checked_product(options->pattern_bytes, options->pipeline_depth, &batch_bytes) ||
+        if (!cec_checked_product(pattern_bytes, options->pipeline_depth, &batch_bytes) ||
             batch_bytes > CEC_MAXIMUM_TCP_BATCH_BYTES) {
             cec_contract_error(error, error_capacity, L"TCP payload multiplied by depth must not exceed 64 MiB");
             return false;
         }
-        std::size_t storage_bytes = 0;
-        if (!cec_checked_storage_bytes(options->session_count, batch_bytes, options->memory_bytes, &storage_bytes)) {
-            // The helper reports failure without writing its output parameter, so the
-            // required size is recomputed here with the same arithmetic it uses, purely so
-            // the message carries the same number as the Rust and Swift clients.
-            const std::size_t  required_storage = batch_bytes * static_cast<std::size_t>(options->session_count) * 2;
-            const std::wstring memory_message   = L"registered memory needs " + std::to_wstring(required_storage) +
-                                                  L" bytes but /memory is " + std::to_wstring(options->memory_bytes);
+        std::size_t one_direction    = 0;
+        std::size_t required_storage = 0;
+        if (!cec_checked_product(batch_bytes, static_cast<std::size_t>(options->session_count), &one_direction) ||
+            !cec_checked_product(one_direction, 2U, &required_storage)) {
+            cec_contract_error(error, error_capacity, L"registered memory size overflows size_t");
+            return false;
+        }
+        if (required_storage > options->memory_bytes) {
+            const std::wstring memory_message = L"registered memory needs " + std::to_wstring(required_storage) +
+                                                L" bytes but /memory is " + std::to_wstring(options->memory_bytes);
             cec_contract_error(error, error_capacity, memory_message.c_str());
             return false;
         }
+        std::size_t per_session_storage = 0;
+        std::size_t worker_storage      = 0;
+        if (!cec_checked_product(batch_bytes, 2U, &per_session_storage) ||
+            !cec_checked_product(per_session_storage, worker_sessions, &worker_storage) ||
+            worker_storage > std::numeric_limits<DWORD>::max()) {
+            cec_contract_error(error, error_capacity, L"registered memory per worker must not exceed 4294967295 bytes");
+            return false;
+        }
     }
-    // Each worker has its own CQ. Check the largest shard, including its remainder.
-    const std::uint32_t worker_count        = cec_resolve_worker_count(options);
-    const std::uint32_t worker_sessions     = (options->session_count + worker_count - 1U) / worker_count;
-    std::size_t         reserved_operations = 0;
-    if (!cec_checked_product(static_cast<std::size_t>(options->pipeline_depth) + 1U, worker_sessions,
-                             &reserved_operations) ||
-        reserved_operations > options->cq_capacity) {
+    constexpr std::size_t operations_per_session =
+        static_cast<std::size_t>(CEC_RIO_MAX_OUTSTANDING_RECEIVES) + CEC_RIO_MAX_OUTSTANDING_SENDS;
+    std::size_t reserved_operations = 0;
+    if (!cec_checked_product(operations_per_session, worker_sessions, &reserved_operations)) {
+        cec_contract_error(error, error_capacity, L"completion queue reservation overflows size_t");
+        return false;
+    }
+    if (reserved_operations > options->cq_capacity) {
         const std::wstring cq_message = L"completion queue holds " + std::to_wstring(options->cq_capacity) +
                                         L" entries but a worker with " + std::to_wstring(worker_sessions) +
                                         L" sessions reserves " + std::to_wstring(reserved_operations);
         cec_contract_error(error, error_capacity, cq_message.c_str());
+        return false;
+    }
+    if (options->help) {
+        return true;
+    }
+    if (!saw_host || options->protocol == cec_protocol::none) {
+        cec_contract_error(error, error_capacity, L"target host and /p tcp or /p udp are required");
         return false;
     }
     return true;
@@ -324,7 +360,8 @@ bool cec_parse_options(int             argc,
 std::uint32_t cec_resolve_worker_count(const cec_options* options) noexcept {
     std::uint32_t workers = options->worker_count;
     if (workers == 0) {
-        workers = std::clamp(static_cast<std::uint32_t>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)), 1U, 32U);
+        workers =
+            std::clamp(static_cast<std::uint32_t>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)), 1U, CEC_MAX_WORKERS);
     }
     return std::min(workers, options->session_count);
 }
