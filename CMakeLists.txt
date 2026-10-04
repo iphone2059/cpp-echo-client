@@ -42,3 +42,7 @@ add_test(NAME cpp-echo-client-process-loopback
     COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/cec_process_tests.ps1
             -ClientPath $<TARGET_FILE:cpp-echo-client>)
 set_tests_properties(cpp-echo-client-process-loopback PROPERTIES TIMEOUT 40)
+add_test(NAME cpp-echo-client-process-quota
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/cec_quota_process_tests.ps1
+            -ClientPath $<TARGET_FILE:cpp-echo-client>)
+set_tests_properties(cpp-echo-client-process-quota PROPERTIES TIMEOUT 40)
