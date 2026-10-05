@@ -190,7 +190,7 @@ static void cec_engine_record_latency(cec_engine_metrics*  metrics,
                                       const LARGE_INTEGER& frequency) noexcept {
     const std::uint64_t ticks = static_cast<std::uint64_t>(finish.QuadPart - start.QuadPart);
     const std::uint64_t microseconds =
-        std::max<std::uint64_t>(1, ticks * 1000000ULL / static_cast<std::uint64_t>(frequency.QuadPart));
+        cec_engine_ticks_to_microseconds(ticks, static_cast<std::uint64_t>(frequency.QuadPart));
     const unsigned bin = std::min<unsigned>(std::bit_width(microseconds) - 1U, 63U);
     metrics->latency_bins[bin].fetch_add(1, std::memory_order_relaxed);
 }
@@ -816,7 +816,7 @@ static std::uint64_t cec_engine_percentile(const cec_engine_metrics* metrics,
     for (unsigned index = 0; index < metrics->latency_bins.size(); ++index) {
         cumulative += metrics->latency_bins[index].load(std::memory_order_relaxed);
         if (cumulative >= target) {
-            return index == 63U ? std::numeric_limits<std::uint64_t>::max() : 1ULL << index;
+            return cec_latency_bin_lower_bound(index);
         }
     }
     return 0;
@@ -904,7 +904,7 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
     cec_engine_timer_resolution timer_resolution{};
     if (options->interval_milliseconds != 0 && !timer_resolution.start()) {
         cec_engine_report(L"timeBeginPeriod(client pacing)", static_cast<int>(timer_resolution.error));
-        return cec_exit_code::network;
+        return cec_exit_code::internal;
     }
 
     const std::uint32_t worker_count = cec_resolve_worker_count(options);

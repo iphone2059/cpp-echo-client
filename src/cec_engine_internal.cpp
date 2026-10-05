@@ -296,11 +296,41 @@ bool cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept {
            lifecycle->total_outstanding == 0 && !lifecycle->notification_armed;
 }
 
-bool cec_session_terminal_accounting_valid(std::uint64_t claimed,
-                                           std::uint64_t echoed,
-                                           std::uint64_t corrupted,
-                                           std::uint64_t lost) noexcept {
-    return echoed <= claimed && corrupted <= claimed - echoed && lost == claimed - echoed - corrupted;
+std::uint64_t cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept {
+    if (frequency == 0) {
+        cec_engine_fail_fast(L"client latency frequency", ERROR_INVALID_DATA);
+    }
+    constexpr std::uint64_t million = 1'000'000ULL;
+    constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t     seconds = ticks / frequency;
+    if (seconds > maximum / million) {
+        return maximum;
+    }
+    const std::uint64_t whole      = seconds * million;
+    const std::uint64_t remainder  = ticks % frequency;
+    std::uint64_t       fractional = 0;
+    if (remainder <= maximum / million) {
+        fractional = remainder * million / frequency;
+    } else {
+        // Find floor(remainder * million / frequency) without an overflowing product.
+        std::uint64_t lower = 0;
+        std::uint64_t upper = million - 1ULL;
+        while (lower < upper) {
+            const std::uint64_t middle = lower + (upper - lower + 1ULL) / 2ULL;
+            const std::uint64_t threshold =
+                middle * (frequency / million) + (middle * (frequency % million) + million - 1ULL) / million;
+            if (threshold <= remainder) {
+                lower = middle;
+            } else {
+                upper = middle - 1ULL;
+            }
+        }
+        fractional = lower;
+    }
+    if (fractional > maximum - whole) {
+        return maximum;
+    }
+    return std::max<std::uint64_t>(1ULL, whole + fractional);
 }
 
 bool cec_notification_packet_matches(ULONG_PTR         key,

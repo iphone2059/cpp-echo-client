@@ -14,6 +14,8 @@ int wmain(int argc, wchar_t** argv) {
         cec_require_rio_notify_success(WSAEINVAL, L"test notify failure");
     } else if (std::wcscmp(argv[1], L"corrupt_cq") == 0) {
         static_cast<void>(cec_require_valid_dequeue_count(RIO_CORRUPT_CQ, L"test corrupt CQ"));
+    } else if (std::wcscmp(argv[1], L"zero_latency_frequency") == 0) {
+        static_cast<void>(cec_engine_ticks_to_microseconds(1, 0));
     } else {
         return 1;
     }

@@ -250,27 +250,29 @@ class cec_engine_worker_resources {
 void              cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept;
 ULONG             cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept;
 bool              cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept;
-bool              cec_session_terminal_accounting_valid(std::uint64_t claimed,
-                                                        std::uint64_t echoed,
-                                                        std::uint64_t corrupted,
-                                                        std::uint64_t lost) noexcept;
-bool              cec_notification_packet_matches(ULONG_PTR         key,
-                                                  const OVERLAPPED* overlapped,
-                                                  ULONG_PTR         expected_key,
-                                                  const OVERLAPPED* expected_overlapped) noexcept;
-bool              cec_timer_initialize(cec_timer_heap* heap,
-                                       cec_timer_node* nodes,
-                                       std::uint32_t*  positions,
-                                       std::uint32_t   capacity,
-                                       ULONGLONG       ticks_per_second = 1000ULL) noexcept;
-ULONGLONG         cec_timer_deadline_after_milliseconds(ULONGLONG now,
-                                                        ULONGLONG milliseconds,
-                                                        ULONGLONG ticks_per_second) noexcept;
-bool  cec_timer_insert_or_update(cec_timer_heap* heap, std::uint32_t session_index, ULONGLONG deadline) noexcept;
-bool  cec_timer_remove(cec_timer_heap* heap, std::uint32_t session_index) noexcept;
-bool  cec_timer_pop_expired(cec_timer_heap* heap, ULONGLONG now, std::uint32_t* session_index) noexcept;
-DWORD cec_timer_wait_milliseconds(const cec_timer_heap* heap, ULONGLONG now) noexcept;
-void  cec_fill_repeated_pattern(std::byte*       destination,
-                                std::size_t      destination_size,
-                                const std::byte* pattern,
-                                std::size_t      pattern_size) noexcept;
+std::uint64_t     cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept;
+
+constexpr std::uint64_t cec_latency_bin_lower_bound(unsigned index) noexcept {
+    return 1ULL << (index < 63U ? index : 63U);
+}
+
+bool      cec_notification_packet_matches(ULONG_PTR         key,
+                                          const OVERLAPPED* overlapped,
+                                          ULONG_PTR         expected_key,
+                                          const OVERLAPPED* expected_overlapped) noexcept;
+bool      cec_timer_initialize(cec_timer_heap* heap,
+                               cec_timer_node* nodes,
+                               std::uint32_t*  positions,
+                               std::uint32_t   capacity,
+                               ULONGLONG       ticks_per_second = 1000ULL) noexcept;
+ULONGLONG cec_timer_deadline_after_milliseconds(ULONGLONG now,
+                                                ULONGLONG milliseconds,
+                                                ULONGLONG ticks_per_second) noexcept;
+bool      cec_timer_insert_or_update(cec_timer_heap* heap, std::uint32_t session_index, ULONGLONG deadline) noexcept;
+bool      cec_timer_remove(cec_timer_heap* heap, std::uint32_t session_index) noexcept;
+bool      cec_timer_pop_expired(cec_timer_heap* heap, ULONGLONG now, std::uint32_t* session_index) noexcept;
+DWORD     cec_timer_wait_milliseconds(const cec_timer_heap* heap, ULONGLONG now) noexcept;
+void      cec_fill_repeated_pattern(std::byte*       destination,
+                                    std::size_t      destination_size,
+                                    const std::byte* pattern,
+                                    std::size_t      pattern_size) noexcept;

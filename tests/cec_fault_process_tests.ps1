@@ -31,5 +31,6 @@ function Invoke-FaultCase {
 Invoke-FaultCase -Mode 'normal' -ExpectedExitCode 0
 Invoke-FaultCase -Mode 'notify_failure' -ExpectedExitCode 4
 Invoke-FaultCase -Mode 'corrupt_cq' -ExpectedExitCode 4
+Invoke-FaultCase -Mode 'zero_latency_frequency' -ExpectedExitCode 4
 
 Write-Host 'PASS client fail-fast boundaries'
