@@ -1,23 +1,16 @@
 # standard-v1 C++ integration baseline
 
-Content revision: **
-v1-cpp-2026-10-05-r2
-**.
+Content revision: **v1-cpp-2026-10-05-r2**.
 
 | Side | Frozen HEAD |
 |---|---|
-| client | 
-6500e34a31660db03aeec3e90ef6eca8c618d154
- |
-| server | 
-fd8e8e9440299f8a9f64a050cd4de49efda566f5
- |
+| client | 6500e34a31660db03aeec3e90ef6eca8c618d154 |
+| server | fd8e8e9440299f8a9f64a050cd4de49efda566f5 |
 
 The baseline equals the frozen content, so a baseline-relative patch is empty by definition: each
-repository already carries the standard-v1 implementation for its side.
-docs/integration-baseline.json holds the SHA256 of every tracked file of the frozen client commit, so
-any later edit is detectable. The frozen commits are the code revisions; the record commits that
-follow them in history merely document them.
+repository already carries the standard-v1 implementation for its side. docs/integration-baseline.json
+holds the SHA256 of every tracked file of the frozen client commit, so any later edit is detectable.
+The frozen commits are code revisions; the record commits that follow them merely document them.
 
 ## Verification at the freeze
 
