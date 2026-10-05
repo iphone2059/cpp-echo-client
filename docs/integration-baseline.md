@@ -4,16 +4,13 @@ Content revision: **v1-cpp-2026-10-05-r2**.
 
 | Side | Frozen HEAD |
 |---|---|
-| client | 
-6500e34a31660db03aeec3e90ef6eca8c618d154
- |
-| server | 
-fd8e8e9440299f8a9f64a050cd4de49efda566f5
- |
+| client | 26e1bf3f2747dde1681966cac19ef50610124c0f |
+| server | 53d89fe4c6f0c54272d4dba10f7b77ad0e202db9 |
 
 The baseline equals the frozen content, so a baseline-relative patch is empty by definition: each
-repository already carries the standard-v1 implementation for its side. docs/integration-baseline.json
-holds the SHA256 of every tracked file of its own frozen commit, so any later edit is detectable.
+repository already carries the standard-v1 implementation for its side.
+docs/integration-baseline.json holds the SHA256 of every tracked file of this frozen commit, so any
+later edit is detectable.
 
 ## Verification at the freeze
 
@@ -26,11 +23,7 @@ holds the SHA256 of every tracked file of its own frozen commit, so any later ed
 ## Revision history
 
 - v1-cpp-2026-10-05: client c67ede9, server 8a6a87b - v1 command line, metrics line and final statistics
-- v1-cpp-2026-10-05-r2: client 
-6500e34a
-, server 
-fd8e8e94
- - RIONotify provider seam, opt-in diagnostics, hardened gate, baseline record
+- v1-cpp-2026-10-05-r2: RIONotify provider seam, opt-in diagnostics, hardened gate, baseline record
 
 ## What this record does not claim
 
