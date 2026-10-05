@@ -57,6 +57,26 @@ static void cec_timer_sift_down(cec_timer_heap* heap, std::uint32_t position) no
     __assume(0);
 }
 
+bool cec_engine_session_enter_active(cec_engine_session* session) noexcept {
+    if (session == nullptr || session->owner == nullptr || session->owner->metrics == nullptr ||
+        session->active_counted) {
+        return false;
+    }
+    session->active_counted = true;
+    session->owner->metrics->active.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool cec_engine_session_leave_active(cec_engine_session* session) noexcept {
+    if (session == nullptr || session->owner == nullptr || session->owner->metrics == nullptr ||
+        !session->active_counted) {
+        return false;
+    }
+    session->active_counted = false;
+    session->owner->metrics->active.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
 void cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept {
     const cec_rio_notify_outcome outcome = cec_rio_notify_outcome_of(status);
     if (outcome == cec_rio_notify_outcome::armed) {

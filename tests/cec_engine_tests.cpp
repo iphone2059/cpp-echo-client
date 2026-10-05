@@ -93,6 +93,28 @@ static void cec_engine_test_owner() noexcept {
                            "client heap owner move transfers allocation");
 }
 
+static void cec_engine_test_active_accounting() noexcept {
+    cec_engine_metrics metrics{};
+    cec_engine_worker  worker{};
+    worker.metrics = &metrics;
+    cec_engine_session session{};
+    session.owner = &worker;
+    cec_engine_test_expect(!cec_engine_session_leave_active(&session) && metrics.active.load() == 0,
+                           "client refuses to leave an active set the session never entered");
+    cec_engine_test_expect(cec_engine_session_enter_active(&session) && metrics.active.load() == 1,
+                           "client counts a connected session as active once");
+    cec_engine_test_expect(!cec_engine_session_enter_active(&session) && metrics.active.load() == 1,
+                           "client never counts one session as active twice");
+    cec_engine_test_expect(cec_engine_session_leave_active(&session) && metrics.active.load() == 0,
+                           "client removes a session from the active set once");
+    cec_engine_test_expect(!cec_engine_session_leave_active(&session) && metrics.active.load() == 0,
+                           "client never removes one session from the active set twice");
+    cec_engine_session failing{};
+    failing.owner = &worker;
+    cec_engine_test_expect(!cec_engine_session_leave_active(&failing) && metrics.active.load() == 0,
+                           "client session that never connected cannot steal an active count");
+}
+
 // Fake RIO provider: the engine reaches the provider through the function table it is given, so a
 // stub table records exactly which provider calls the owner classes make and when.
 static int          cec_engine_test_rio_closes          = 0;
@@ -375,6 +397,7 @@ int main() {
     cec_engine_test_accounting_model();
     cec_engine_test_owner();
     cec_engine_test_rio_owner();
+    cec_engine_test_active_accounting();
     cec_engine_test_timer();
     cec_engine_test_timer_model();
     cec_engine_test_qpc_timer();

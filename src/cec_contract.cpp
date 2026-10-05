@@ -37,8 +37,18 @@ static bool cec_contract_is_switch(std::wstring_view token) noexcept {
 }
 
 static bool cec_contract_valid_utf16(std::wstring_view text) noexcept {
-    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0,
-                               nullptr, nullptr) > 0;
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const wchar_t character = text[index];
+        if (character >= 0xD800 && character <= 0xDBFF) {
+            ++index;
+            if (index == text.size() || text[index] < 0xDC00 || text[index] > 0xDFFF) {
+                return false;
+            }
+        } else if (character >= 0xDC00 && character <= 0xDFFF) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool cec_contract_is_value_switch(std::wstring_view name) noexcept {
@@ -119,10 +129,10 @@ bool cec_parse_options(int             argc,
         cec_contract_error(error, error_capacity, L"invalid parser arguments");
         return false;
     }
-    *options           = cec_options{ cec_protocol::none,
+    *options              = cec_options{ cec_protocol::none,
                             cec_pattern_kind::default_text,
-                                      {},
-                                      {},
+                                         {},
+                                         {},
                             static_cast<std::uint16_t>(CEC_DEFAULT_PORT),
                             0,
                             CEC_DEFAULT_COUNT,
@@ -141,25 +151,28 @@ bool cec_parse_options(int             argc,
                             false,
                             false,
                             false };
-    bool saw_host      = false;
-    bool saw_pipeline  = false;
-    bool saw_literal   = false;
-    bool saw_binary    = false;
-    bool saw_printable = false;
+    bool saw_host         = false;
+    bool saw_pipeline     = false;
+    bool saw_literal      = false;
+    bool saw_binary       = false;
+    bool saw_printable    = false;
+    bool saw_extra_target = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::wstring_view token{ argv[index] };
+        if (!cec_contract_valid_utf16(token)) {
+            cec_contract_error(error, error_capacity, L"invalid-utf16");
+            return false;
+        }
         if (!cec_contract_is_switch(token)) {
             if (saw_host) {
-                cec_contract_error(error, error_capacity, L"unexpected-target");
-                return false;
+                // A second target is recorded and reported after the missing-argument rules, so a
+                // later malformed switch still reports its own token first.
+                saw_extra_target = true;
+                continue;
             }
-            if (token.size() >= CEC_HOST_CAPACITY) {
+            if (token.empty() || token.size() >= CEC_HOST_CAPACITY) {
                 cec_contract_error(error, error_capacity, L"out-of-range");
-                return false;
-            }
-            if (!cec_contract_valid_utf16(token)) {
-                cec_contract_error(error, error_capacity, L"invalid-utf16");
                 return false;
             }
             if (!cec_contract_copy(token, options->host, CEC_HOST_CAPACITY)) {
@@ -272,18 +285,23 @@ bool cec_parse_options(int             argc,
         }
     }
 
-    // The per-session worker split is a cross-field rule: it is checked after every token range and
-    // before the mandatory, payload, protocol and local-port rules.
+    // Cross-field rules keep the frozen precedence: the worker split first, then the mandatory
+    // arguments, the payload conflict, the protocol options, the local-port rules and the quota, so
+    // every malformed combination reports the same token as the standard.
     if (options->worker_count > options->session_count) {
         cec_contract_error(error, error_capacity, L"out-of-range");
         return false;
     }
-    if (options->local_port != 0 && options->session_count != 1) {
-        cec_contract_error(error, error_capacity, L"local-port-conflict");
+    if (!options->help && !saw_host) {
+        cec_contract_error(error, error_capacity, L"missing-target");
         return false;
     }
-    if (options->echo_count > std::numeric_limits<std::uint64_t>::max() / options->session_count) {
-        cec_contract_error(error, error_capacity, L"quota-overflow");
+    if (saw_extra_target) {
+        cec_contract_error(error, error_capacity, L"unexpected-target");
+        return false;
+    }
+    if (!options->help && options->protocol == cec_protocol::none) {
+        cec_contract_error(error, error_capacity, L"missing-protocol");
         return false;
     }
     if (static_cast<unsigned>(saw_literal) + static_cast<unsigned>(saw_binary) + static_cast<unsigned>(saw_printable) >
@@ -295,8 +313,13 @@ bool cec_parse_options(int             argc,
         cec_contract_error(error, error_capacity, L"protocol-option");
         return false;
     }
-    if (options->protocol == cec_protocol::tcp && options->reconnect_seconds >= 0 && options->local_port != 0) {
+    if (options->local_port != 0 &&
+        (options->session_count != 1 || (options->protocol == cec_protocol::tcp && options->reconnect_seconds >= 0))) {
         cec_contract_error(error, error_capacity, L"local-port-conflict");
+        return false;
+    }
+    if (options->echo_count > std::numeric_limits<std::uint64_t>::max() / options->session_count) {
+        cec_contract_error(error, error_capacity, L"quota-overflow");
         return false;
     }
     std::size_t pattern_bytes = options->pattern_bytes;
@@ -319,6 +342,10 @@ bool cec_parse_options(int             argc,
             return false;
         }
         pattern_bytes = static_cast<std::size_t>(bytes - 1);
+    }
+    if (options->protocol == cec_protocol::none) {
+        // Nothing else can be validated without a protocol, which is how /h alone succeeds.
+        return true;
     }
     // Each worker has its own CQ and registered arena. Validate its largest shard.
     const std::uint32_t worker_count    = cec_resolve_worker_count(options);
@@ -363,17 +390,6 @@ bool cec_parse_options(int             argc,
     }
     if (reserved_operations > options->cq_capacity) {
         cec_contract_error(error, error_capacity, L"cq-capacity");
-        return false;
-    }
-    if (options->help) {
-        return true;
-    }
-    if (!saw_host) {
-        cec_contract_error(error, error_capacity, L"missing-target");
-        return false;
-    }
-    if (options->protocol == cec_protocol::none) {
-        cec_contract_error(error, error_capacity, L"missing-protocol");
         return false;
     }
     return true;

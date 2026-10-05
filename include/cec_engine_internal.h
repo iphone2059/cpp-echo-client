@@ -100,6 +100,10 @@ struct cec_engine_session {
     bool               send_done;
     bool               receive_done;
     bool               attempt_accounted;
+    // Paired with the shared active counter: a session contributes exactly once, and only after it
+    // has connected, so failing or stopping a session that never connected cannot steal another
+    // session's contribution.
+    bool               active_counted;
     bool               reconnect_after_close;
 };
 
@@ -270,6 +274,8 @@ class cec_engine_worker_resources {
 };
 
 [[noreturn]] void cec_engine_fail_fast(const wchar_t* stage, int error) noexcept;
+bool              cec_engine_session_enter_active(cec_engine_session* session) noexcept;
+bool              cec_engine_session_leave_active(cec_engine_session* session) noexcept;
 void              cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept;
 ULONG             cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept;
 bool              cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept;

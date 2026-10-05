@@ -244,10 +244,9 @@ static void cec_engine_unschedule(cec_engine_session* session) noexcept {
 }
 
 static void cec_engine_mark_done(cec_engine_session* session) noexcept {
-    const std::uint64_t active = session->owner->metrics->active.load(std::memory_order_relaxed);
-    if (active != 0) {
-        session->owner->metrics->active.fetch_sub(1, std::memory_order_relaxed);
-    }
+    // Only a session that entered the active set may leave it, so a session that fails before it
+    // connects never disturbs the live count of the sessions that did connect.
+    (void) cec_engine_session_leave_active(session);
     cec_engine_unschedule(session);
     cec_engine_session_socket_close(session);
     session->request_queue = RIO_INVALID_RQ;
@@ -541,7 +540,7 @@ static void cec_engine_process_connect(cec_engine_session* session, BOOL complet
         return;
     }
     session->owner->metrics->connections.fetch_add(1, std::memory_order_relaxed);
-    session->owner->metrics->active.fetch_add(1, std::memory_order_relaxed);
+    (void) cec_engine_session_enter_active(session);
     if (!cec_engine_create_request_queue(session) || !cec_engine_begin_attempt(session)) {
         cec_engine_connection_failed(session);
     }

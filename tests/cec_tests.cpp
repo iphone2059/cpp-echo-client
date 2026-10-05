@@ -267,6 +267,35 @@ static void cec_test_resource_validation() noexcept {
                     "client registered arena accepts the same storage split across smaller worker shards");
 }
 
+static void cec_test_error_precedence() noexcept {
+    cec_options                             options{};
+    std::array<wchar_t, CEC_ERROR_CAPACITY> error{};
+    const auto                              parse = [&](auto& args) noexcept {
+        error.fill(L'\0');
+        return cec_parse_options(static_cast<int>(args.size()), args.data(), &options, error.data(), error.size());
+    };
+    std::array<wchar_t*, 7> missing_target{ cec_test_arg(L"client"), cec_test_arg(L"/p"), cec_test_arg(L"tcp"),
+                                            cec_test_arg(L"/c"),     cec_test_arg(L"2"),  cec_test_arg(L"/l"),
+                                            cec_test_arg(L"7") };
+    cec_test_expect(!parse(missing_target) && std::wcscmp(error.data(), L"missing-target") == 0,
+                    "client reports a missing target before the local-port rule");
+
+    wchar_t                 surrogate[] = { static_cast<wchar_t>(0xD800), L'\0' };
+    std::array<wchar_t*, 4> malformed{ cec_test_arg(L"client"), cec_test_arg(L"/p"), cec_test_arg(L"tcp"), surrogate };
+    cec_test_expect(!parse(malformed) && std::wcscmp(error.data(), L"invalid-utf16") == 0,
+                    "client validates UTF-16 before interpreting a token");
+
+    std::array<wchar_t*, 3> empty_target{ cec_test_arg(L"client"), cec_test_arg(L""), cec_test_arg(L"/h") };
+    cec_test_expect(!parse(empty_target) && std::wcscmp(error.data(), L"out-of-range") == 0,
+                    "client rejects an empty target as out of range");
+
+    std::array<wchar_t*, 6> extra_before_invalid{ cec_test_arg(L"client"),    cec_test_arg(L"localhost"),
+                                                  cec_test_arg(L"127.0.0.1"), cec_test_arg(L"/p"),
+                                                  cec_test_arg(L"tcp"),       cec_test_arg(L"/b") };
+    cec_test_expect(!parse(extra_before_invalid) && std::wcscmp(error.data(), L"missing-value") == 0,
+                    "client reports a malformed switch after a repeated target");
+}
+
 static void cec_test_text_resources() noexcept {
     cec_options                             options{};
     std::array<wchar_t, CEC_ERROR_CAPACITY> error{};
@@ -349,13 +378,20 @@ static void cec_test_help_validation() noexcept {
                                           cec_test_arg(L"udp"),    cec_test_arg(L"/k"), cec_test_arg(L"1") };
     cec_test_expect(!parse(udp_pipeline) && std::wcsstr(error.data(), L"protocol-option") != nullptr,
                     "client help rejects an explicit UDP pipeline even at depth one");
-    std::array<wchar_t*, 8> cq_conflict{ cec_test_arg(L"client"), cec_test_arg(L"/h"),       cec_test_arg(L"/c"),
-                                         cec_test_arg(L"33"),     cec_test_arg(L"/threads"), cec_test_arg(L"1"),
-                                         cec_test_arg(L"/cq"),    cec_test_arg(L"64") };
+    std::array<wchar_t*, 10> cq_conflict{ cec_test_arg(L"client"),   cec_test_arg(L"/h"), cec_test_arg(L"/p"),
+                                          cec_test_arg(L"tcp"),      cec_test_arg(L"/c"), cec_test_arg(L"33"),
+                                          cec_test_arg(L"/threads"), cec_test_arg(L"1"),  cec_test_arg(L"/cq"),
+                                          cec_test_arg(L"64") };
     cec_test_expect(!parse(cq_conflict) && std::wcsstr(error.data(), L"cq-capacity") != nullptr,
-                    "client help rejects an undersized CQ without required fields");
-    cq_conflict[3] = cec_test_arg(L"32");
+                    "client help rejects an undersized CQ once a protocol is selected");
+    cq_conflict[5] = cec_test_arg(L"32");
     cec_test_expect(parse(cq_conflict) && options.help, "client help accepts exact two-operation CQ reservation");
+    std::array<wchar_t*, 8> cq_without_protocol{ cec_test_arg(L"client"),   cec_test_arg(L"/h"),
+                                                 cec_test_arg(L"/c"),       cec_test_arg(L"33"),
+                                                 cec_test_arg(L"/threads"), cec_test_arg(L"1"),
+                                                 cec_test_arg(L"/cq"),      cec_test_arg(L"64") };
+    cec_test_expect(parse(cq_without_protocol) && options.help,
+                    "client help without a protocol skips arena validation like the standard");
     std::array<wchar_t*, 6> quota_conflict{ cec_test_arg(L"client"), cec_test_arg(L"/h"),
                                             cec_test_arg(L"/c"),     cec_test_arg(L"2"),
                                             cec_test_arg(L"/n"),     cec_test_arg(L"9223372036854775808") };
@@ -478,6 +514,7 @@ int main() {
     cec_test_capacity();
     cec_test_cq_batch_reservation();
     cec_test_resource_validation();
+    cec_test_error_precedence();
     cec_test_text_resources();
     cec_test_help_validation();
     cec_test_patterns();
