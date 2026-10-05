@@ -93,6 +93,56 @@ static void cec_engine_test_owner() noexcept {
                            "client heap owner move transfers allocation");
 }
 
+// Fake RIO provider: the engine reaches the provider through the function table it is given, so a
+// stub table records exactly which provider calls the owner classes make and when.
+static int          cec_engine_test_rio_closes          = 0;
+static int          cec_engine_test_rio_deregisters     = 0;
+static RIO_CQ       cec_engine_test_rio_closed_queue    = RIO_INVALID_CQ;
+static RIO_BUFFERID cec_engine_test_rio_deregistered_id = RIO_INVALID_BUFFERID;
+
+static void WINAPI cec_engine_test_rio_close_completion_queue(RIO_CQ queue) noexcept {
+    ++cec_engine_test_rio_closes;
+    cec_engine_test_rio_closed_queue = queue;
+}
+
+static void WINAPI cec_engine_test_rio_deregister_buffer(RIO_BUFFERID buffer) noexcept {
+    ++cec_engine_test_rio_deregisters;
+    cec_engine_test_rio_deregistered_id = buffer;
+}
+
+static void cec_engine_test_rio_owner() noexcept {
+    RIO_EXTENSION_FUNCTION_TABLE table{};
+    table.RIOCloseCompletionQueue = &cec_engine_test_rio_close_completion_queue;
+    table.RIODeregisterBuffer     = &cec_engine_test_rio_deregister_buffer;
+
+    const RIO_CQ       queue  = reinterpret_cast<RIO_CQ>(static_cast<std::uintptr_t>(0x1234U));
+    const RIO_BUFFERID buffer = reinterpret_cast<RIO_BUFFERID>(static_cast<std::uintptr_t>(0x5678U));
+    {
+        cec_rio_cq_owner           completion_queue{ &table, queue };
+        cec_rio_registration_owner registration{ &table, buffer };
+        cec_engine_test_expect(cec_engine_test_rio_closes == 0 && cec_engine_test_rio_deregisters == 0,
+                               "client RIO owners hold handles without releasing them");
+        cec_rio_cq_owner moved{ std::move(completion_queue) };
+        cec_engine_test_expect(completion_queue.get() == RIO_INVALID_CQ && moved.get() == queue,
+                               "client completion queue owner move leaves the source empty");
+    }
+    cec_engine_test_expect(cec_engine_test_rio_closes == 1 && cec_engine_test_rio_closed_queue == queue,
+                           "client releases the completion queue exactly once");
+    cec_engine_test_expect(cec_engine_test_rio_deregisters == 1 && cec_engine_test_rio_deregistered_id == buffer,
+                           "client deregisters the arena exactly once");
+
+    cec_rio_cq_owner reused{ &table, queue };
+    reused.reset(&table, RIO_INVALID_CQ);
+    reused.reset(&table, RIO_INVALID_CQ);
+    cec_engine_test_expect(cec_engine_test_rio_closes == 2 && reused.get() == RIO_INVALID_CQ,
+                           "client never closes a completion queue twice");
+
+    cec_rio_registration_owner released{ &table, buffer };
+    static_cast<void>(released.release());
+    released.reset(&table, RIO_INVALID_BUFFERID);
+    cec_engine_test_expect(cec_engine_test_rio_deregisters == 1, "client never deregisters a released arena buffer");
+}
+
 static void cec_engine_test_timer() noexcept {
     std::array<cec_timer_node, 4> nodes{};
     std::array<std::uint32_t, 4>  positions{};
@@ -324,6 +374,7 @@ int main() {
     cec_engine_test_lifecycle();
     cec_engine_test_accounting_model();
     cec_engine_test_owner();
+    cec_engine_test_rio_owner();
     cec_engine_test_timer();
     cec_engine_test_timer_model();
     cec_engine_test_qpc_timer();

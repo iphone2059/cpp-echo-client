@@ -204,6 +204,7 @@ static void cec_engine_arm(cec_engine_worker* worker) noexcept {
     if (!cec_notification_mark_rearmed(&worker->notification_armed)) {
         cec_engine_fail_fast(L"client notification rearm transition", ERROR_INVALID_STATE);
     }
+    ++worker->notify_arms;
 }
 
 // Lazy arm: the completion queue is armed exactly when RIO work is outstanding and no
@@ -604,6 +605,7 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
             if (!cec_notification_mark_delivered(&worker->notification_armed)) {
                 cec_engine_fail_fast(L"client notification delivery transition", ERROR_INVALID_STATE);
             }
+            ++worker->notify_deliveries;
             cec_engine_drain(worker);
             // A bounded drain may leave results queued; arming an already nonempty CQ notifies
             // immediately, so the rearm only has to happen while work is still outstanding.
@@ -623,6 +625,10 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
             } else {
                 cec_engine_process_connect(session, ok, error);
             }
+        } else if (ok == FALSE && error == WAIT_TIMEOUT && overlapped == nullptr) {
+            if (!worker->stopping && worker->rio_outstanding != 0 && !worker->notification_armed) {
+                ++worker->notify_timeout_wakeups;
+            }
         } else if (ok == FALSE && error != WAIT_TIMEOUT) {
             cec_engine_fail_fast(L"GetQueuedCompletionStatus(client)", static_cast<int>(error));
         } else if (!(ok == FALSE && error == WAIT_TIMEOUT && overlapped == nullptr)) {
@@ -641,6 +647,14 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
     if (worker->rio_outstanding != 0) {
         cec_engine_fail_fast(L"client RIO cleanup with outstanding operations", ERROR_IO_INCOMPLETE);
     }
+#ifndef NDEBUG
+    if (worker->notify_timeout_wakeups != 0) {
+        cec_engine_fail_fast(L"client notification starvation", ERROR_INVALID_STATE);
+    }
+    if (worker->notify_arms < worker->notify_deliveries || worker->notify_arms - worker->notify_deliveries > 1U) {
+        cec_engine_fail_fast(L"client notification accounting", ERROR_INVALID_STATE);
+    }
+#endif
     return worker->fatal->load(std::memory_order_acquire) ? 1U : 0U;
 }
 
