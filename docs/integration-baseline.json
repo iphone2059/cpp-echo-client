@@ -1,0 +1,118 @@
+{
+  "contentRevision": "v1-cpp-2026-10-05-r2",
+  "frozenAt": "2026-10-05T20:55:01",
+  "project": "cpp-echo-client",
+  "frozenHead": "6500e34a31660db03aeec3e90ef6eca8c618d154",
+  "pairedFrozenHead": "fd8e8e9440299f8a9f64a050cd4de49efda566f5",
+  "fileCount": 27,
+  "files": [
+    {
+      "path": ".clang-format",
+      "sha256": "50b2dae004145b8e773d2b6d728e205eacdd9fbfab1791b024d5762b43e3ce21"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "5172bdad64a8861829dabf5de12291d56b6fcddab9fdef427f84f01ccd1a7eea"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "7b5753d29facfacb2c5adae4715a8dec8ffffe22c7540f63cb75826db2416221"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "e757b1a314fd58ab9d4a03ae8be2d4755ad9cae1f73dd7ef8239233aa82d7ad5"
+    },
+    {
+      "path": "README.md",
+      "sha256": "fcad96e3d9fa4d1cf5c2280ae05bd9a0285b3f13cadcda0be02acbeddb60156d"
+    },
+    {
+      "path": "build.ps1",
+      "sha256": "508c5d2f1dc59bdfae94a9885e4cdb048cf981663d2ace136924659c88d86b56"
+    },
+    {
+      "path": "build_debug.ps1",
+      "sha256": "11954105cd40d6ea25fcd2fe626b6b3ada151fd60b26b7e6d5d01b42f485285e"
+    },
+    {
+      "path": "build_release.ps1",
+      "sha256": "bdab087897393ab3da963e58ea807abed46403c4ac7df7426f85fa06ba352f46"
+    },
+    {
+      "path": "cmake/cec_constraints.cmake",
+      "sha256": "63ade8b8e0e4af87e65bbce6a5cb055dc0e8bf14ee4be7891d869913b398b218"
+    },
+    {
+      "path": "format.ps1",
+      "sha256": "78590813e83b620b8edc5a02e51db95757284d2b25ab1be44e43db6ffbbdd3f6"
+    },
+    {
+      "path": "include/cec_compiler_contract.h",
+      "sha256": "2176a8b5f9ffc6ed66e0bf2d4430632e4960748b29c56501b3008c87818c7454"
+    },
+    {
+      "path": "include/cec_engine_internal.h",
+      "sha256": "8c49b942079d34192ed544b3e55c901e4a3e57258c4b39224f69cb4db81bae40"
+    },
+    {
+      "path": "include/cec_types.h",
+      "sha256": "4aff7be84842c9e96a861e3342695a851bf3f412488e0237f82cf2e23d34b537"
+    },
+    {
+      "path": "src/cec_contract.cpp",
+      "sha256": "d1c8a27aa372a7d0e8213eb51658abea6dd4eeca921b797e46cb3c09c4d56b89"
+    },
+    {
+      "path": "src/cec_engine.cpp",
+      "sha256": "811520f78cc513d38ccd0ccd6372d40e04f5380ec683d94ca087eb8d2132de0c"
+    },
+    {
+      "path": "src/cec_engine_internal.cpp",
+      "sha256": "f5e8a7e662c30819498739d19e1c5ee91555e5c22758015ae6b4f6cab1b6e432"
+    },
+    {
+      "path": "src/main.cpp",
+      "sha256": "e57b3fbfcafa11aca2b5409fd50ddd47b4d2a03a6e9529f899b309d20dc6c6de"
+    },
+    {
+      "path": "tests/cec_engine_tests.cpp",
+      "sha256": "1f2e6f17c70943a5d115a840bb700b529cf4ceddffe72c2cbd24d5d3c2aedb0a"
+    },
+    {
+      "path": "tests/cec_fault_driver.cpp",
+      "sha256": "2b3d6b96f1e7cc03ab8e9bfd1ee31ddfdb263b8b3a5c244a73e7b2611374e3ca"
+    },
+    {
+      "path": "tests/cec_fault_process_tests.ps1",
+      "sha256": "076d6ba208e6c17dccd1a0515ac05d73d8229029e3250985c56eb317fe720990"
+    },
+    {
+      "path": "tests/cec_notify_model.h",
+      "sha256": "d8cf86d3e492f68616b6366264aa780185f6d35699e1b72b47a4422aad034cfd"
+    },
+    {
+      "path": "tests/cec_process_tests.ps1",
+      "sha256": "bba4b04c26908b8123f080a22f0727ec949a8c6bebb1fc123d44258ce1e8856c"
+    },
+    {
+      "path": "tests/cec_quota_process_tests.ps1",
+      "sha256": "da703970c9d89899b1f5a39b9ff767435be4203e51a6adf39767da6523b81cc1"
+    },
+    {
+      "path": "tests/cec_source_policy.ps1",
+      "sha256": "b10c78be0dc59ca467b0e866c6081d7a432736cbd33a58a8ac1bcc8dd6cbab4f"
+    },
+    {
+      "path": "tests/cec_test_models.h",
+      "sha256": "b9b1ccae4a43dae08e5433777f1e42d5cba3040f1cac50c95269c30a0f60dbe7"
+    },
+    {
+      "path": "tests/cec_tests.cpp",
+      "sha256": "64d382822246ab81e58ea9b051cff46efe7296caa0ef72e27990383c3dcacdbe"
+    },
+    {
+      "path": "tools/notify-diagnostics.ps1",
+      "sha256": "06efb8c9ece7cf0988609eb5b4e5bc8cdec50b7054bca249d8764ce6aea43e02"
+    }
+  ]
+}
