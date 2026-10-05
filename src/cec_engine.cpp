@@ -199,8 +199,12 @@ static void cec_engine_record_latency(cec_engine_metrics*  metrics,
 }
 
 static void cec_engine_arm(cec_engine_worker* worker) noexcept {
-    // The OVERLAPPED reset stays in the production wrapper: it is not part of the transaction that a
-    // fake provider needs to drive.
+    // Ownership check first: if a notification is still armed it may own the dedicated OVERLAPPED, so
+    // the wrapper must refuse before it touches that storage. The shared transaction keeps its own
+    // copy of the check as a second line of defence.
+    if (worker->notification_armed) {
+        cec_engine_fail_fast(L"client notification duplicate arm", ERROR_INVALID_STATE);
+    }
     std::memset(&worker->notification_overlapped, 0, sizeof(worker->notification_overlapped));
     cec_notification_arm(worker->rio, worker->completion_queue, &worker->notification_armed, &worker->notify_arms,
                          L"RIONotify(client)");
