@@ -1,0 +1,1 @@
+echo-binary-contract-v1
