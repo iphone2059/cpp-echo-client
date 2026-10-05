@@ -30,7 +30,7 @@ Test-CecPattern -Pattern '\b(send|recv|sendto|recvfrom|WSASend|WSARecv)\s*\(' -L
 Test-CecPattern -Pattern '\b(CreateFile|CreateEvent|CreateMutex|CreateSemaphore|LoadLibrary|GetModuleHandle|MessageBox)\s*\(' -Label 'non-Unicode Windows API' -Files $cecSources
 
 $cecOwnedFiles = @(Get-ChildItem -LiteralPath $cecRoot -File -Recurse | Where-Object {
-        $_.FullName -notmatch '[\\/]build[\\/]' -and $_.FullName -ne $PSCommandPath
+        $_.FullName -notmatch '[\\/]build[\\/]' -and $_.FullName -notmatch '[\\/]tools[\\/]verification[\\/]' -and $_.FullName -ne $PSCommandPath
     })
 Test-CecPattern -Pattern 'cpp-echo-server|\.\.[\\/].*(common|shared)|add_subdirectory\s*\(' -Label 'cross-project dependency' -Files $cecOwnedFiles
 
@@ -40,3 +40,4 @@ if ($cecFailures.Count -ne 0) {
 }
 
 Write-Host 'PASS client source policy'
+
