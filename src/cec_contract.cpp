@@ -36,6 +36,11 @@ static bool cec_contract_is_switch(std::wstring_view token) noexcept {
     return (first >= L'A' && first <= L'Z') || (first >= L'a' && first <= L'z');
 }
 
+static bool cec_contract_valid_utf16(std::wstring_view text) noexcept {
+    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0,
+                               nullptr, nullptr) > 0;
+}
+
 static bool cec_contract_is_value_switch(std::wstring_view name) noexcept {
     return cec_contract_equal(name, L"p") || cec_contract_equal(name, L"d") || cec_contract_equal(name, L"r") ||
            cec_contract_equal(name, L"l") || cec_contract_equal(name, L"n") || cec_contract_equal(name, L"t") ||
@@ -145,8 +150,20 @@ bool cec_parse_options(int             argc,
     for (int index = 1; index < argc; ++index) {
         const std::wstring_view token{ argv[index] };
         if (!cec_contract_is_switch(token)) {
-            if (saw_host || !cec_contract_copy(token, options->host, CEC_HOST_CAPACITY)) {
-                cec_contract_error(error, error_capacity, L"client requires exactly one valid target host");
+            if (saw_host) {
+                cec_contract_error(error, error_capacity, L"unexpected-target");
+                return false;
+            }
+            if (token.size() >= CEC_HOST_CAPACITY) {
+                cec_contract_error(error, error_capacity, L"out-of-range");
+                return false;
+            }
+            if (!cec_contract_valid_utf16(token)) {
+                cec_contract_error(error, error_capacity, L"invalid-utf16");
+                return false;
+            }
+            if (!cec_contract_copy(token, options->host, CEC_HOST_CAPACITY)) {
+                cec_contract_error(error, error_capacity, L"out-of-range");
                 return false;
             }
             saw_host = true;
@@ -159,15 +176,10 @@ bool cec_parse_options(int             argc,
         const std::wstring_view name      = body.substr(0, separator);
         const std::wstring_view inline_value =
             separator == std::wstring_view::npos ? std::wstring_view{} : body.substr(separator + 1);
-        if (separator != std::wstring_view::npos && inline_value.empty()) {
-            cec_contract_error(error, error_capacity, L"switch requires a non-empty inline value");
-            return false;
-        }
-
         if (cec_contract_equal(name, L"q") || cec_contract_equal(name, L"quiet") ||
             cec_contract_equal(name, L"stats") || cec_contract_equal(name, L"h") || cec_contract_equal(name, L"help")) {
             if (separator != std::wstring_view::npos) {
-                cec_contract_error(error, error_capacity, L"flag switch does not accept a value");
+                cec_contract_error(error, error_capacity, L"unexpected-value");
                 return false;
             }
             options->quiet = options->quiet || cec_contract_equal(name, L"q") || cec_contract_equal(name, L"quiet");
@@ -183,13 +195,18 @@ bool cec_parse_options(int             argc,
         }
 
         if (!cec_contract_is_value_switch(name)) {
-            cec_contract_error(error, error_capacity, L"unknown switch");
+            cec_contract_error(error, error_capacity, L"unknown-switch");
+            return false;
+        }
+
+        if (separator != std::wstring_view::npos && inline_value.empty()) {
+            cec_contract_error(error, error_capacity, L"missing-value");
             return false;
         }
 
         std::wstring_view value{};
         if (!cec_contract_value(argc, argv, &index, inline_value, &value)) {
-            cec_contract_error(error, error_capacity, L"switch requires a non-empty value");
+            cec_contract_error(error, error_capacity, L"missing-value");
             return false;
         }
         std::uint64_t number = 0;
@@ -199,18 +216,18 @@ bool cec_parse_options(int             argc,
             } else if (cec_contract_equal(value, L"udp")) {
                 options->protocol = cec_protocol::udp;
             } else {
-                cec_contract_error(error, error_capacity, L"/p requires tcp or udp");
+                cec_contract_error(error, error_capacity, L"out-of-range");
                 return false;
             }
         } else if (cec_contract_equal(name, L"d")) {
             if (!cec_contract_copy(value, options->literal_pattern, CEC_LITERAL_CAPACITY)) {
-                cec_contract_error(error, error_capacity, L"literal text exceeds the Windows command-line limit");
+                cec_contract_error(error, error_capacity, L"out-of-range");
                 return false;
             }
             options->pattern_kind = cec_pattern_kind::literal_text;
             saw_literal           = true;
         } else if (!cec_contract_number(value, &number)) {
-            cec_contract_error(error, error_capacity, L"numeric switch has an invalid value");
+            cec_contract_error(error, error_capacity, L"invalid-number");
             return false;
         } else if (cec_contract_equal(name, L"r") && number >= 1 && number <= 65535) {
             options->remote_port = static_cast<std::uint16_t>(number);
@@ -224,7 +241,7 @@ bool cec_parse_options(int             argc,
             options->interval_milliseconds = static_cast<std::uint32_t>(number);
         } else if (cec_contract_equal(name, L"b") && number <= INT32_MAX) {
             options->socket_buffer_bytes = static_cast<std::uint32_t>(number);
-        } else if (cec_contract_equal(name, L"k") && number >= 1 && number <= UINT32_MAX) {
+        } else if (cec_contract_equal(name, L"k") && number >= 1 && number <= 65536) {
             options->pipeline_depth = static_cast<std::uint32_t>(number);
             saw_pipeline            = true;
         } else if (cec_contract_equal(name, L"z") && number >= 1 && number <= CEC_MAXIMUM_TCP_BATCH_BYTES) {
@@ -235,11 +252,11 @@ bool cec_parse_options(int             argc,
             options->pattern_kind  = cec_pattern_kind::printable_counter;
             options->pattern_bytes = static_cast<std::uint32_t>(number);
             saw_printable          = true;
-        } else if (cec_contract_equal(name, L"w") && number >= 1 && number <= UINT32_MAX) {
+        } else if (cec_contract_equal(name, L"w") && number <= UINT32_MAX) {
             options->run_seconds = static_cast<std::uint32_t>(number);
-        } else if (cec_contract_equal(name, L"rc") && number <= INT32_MAX) {
-            options->reconnect_seconds = static_cast<std::int32_t>(number);
-        } else if (cec_contract_equal(name, L"report") && number >= 1 && number <= UINT32_MAX) {
+        } else if (cec_contract_equal(name, L"rc") && number <= UINT32_MAX) {
+            options->reconnect_seconds = static_cast<std::int64_t>(number);
+        } else if (cec_contract_equal(name, L"report") && number <= UINT32_MAX) {
             options->report_seconds = static_cast<std::uint32_t>(number);
         } else if (cec_contract_equal(name, L"c") && number >= 1 && number <= 1048576) {
             options->session_count = static_cast<std::uint32_t>(number);
@@ -250,30 +267,36 @@ bool cec_parse_options(int             argc,
         } else if (cec_contract_equal(name, L"memory") && number >= 1048576) {
             options->memory_bytes = number;
         } else {
-            cec_contract_error(error, error_capacity, L"unknown switch or value outside its valid range");
+            cec_contract_error(error, error_capacity, L"out-of-range");
             return false;
         }
     }
 
+    // The per-session worker split is a cross-field rule: it is checked after every token range and
+    // before the mandatory, payload, protocol and local-port rules.
+    if (options->worker_count > options->session_count) {
+        cec_contract_error(error, error_capacity, L"out-of-range");
+        return false;
+    }
     if (options->local_port != 0 && options->session_count != 1) {
-        cec_contract_error(error, error_capacity, L"a fixed /l port requires /c 1");
+        cec_contract_error(error, error_capacity, L"local-port-conflict");
         return false;
     }
     if (options->echo_count > std::numeric_limits<std::uint64_t>::max() / options->session_count) {
-        cec_contract_error(error, error_capacity, L"echo count multiplied by sessions exceeds the finite quota limit");
+        cec_contract_error(error, error_capacity, L"quota-overflow");
         return false;
     }
     if (static_cast<unsigned>(saw_literal) + static_cast<unsigned>(saw_binary) + static_cast<unsigned>(saw_printable) >
         1U) {
-        cec_contract_error(error, error_capacity, L"use exactly one of /d, /z, or /zt");
+        cec_contract_error(error, error_capacity, L"conflicting-payload");
         return false;
     }
     if (options->protocol == cec_protocol::udp && saw_pipeline) {
-        cec_contract_error(error, error_capacity, L"/k is available only for TCP");
+        cec_contract_error(error, error_capacity, L"protocol-option");
         return false;
     }
     if (options->protocol == cec_protocol::tcp && options->reconnect_seconds >= 0 && options->local_port != 0) {
-        cec_contract_error(error, error_capacity, L"TCP reconnect cannot use a fixed /l port");
+        cec_contract_error(error, error_capacity, L"local-port-conflict");
         return false;
     }
     std::size_t pattern_bytes = options->pattern_bytes;
@@ -285,14 +308,14 @@ bool cec_parse_options(int             argc,
             const int characters = _snwprintf_s(default_pattern.data(), default_pattern.size(), _TRUNCATE,
                                                 CEC_DEFAULT_PATTERN_FORMAT, options->host);
             if (characters < 0) {
-                cec_contract_error(error, error_capacity, L"default payload text exceeds its buffer");
+                cec_contract_error(error, error_capacity, L"payload-size");
                 return false;
             }
             text = default_pattern.data();
         }
         const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, nullptr, 0, nullptr, nullptr);
         if (bytes <= 1) {
-            cec_contract_error(error, error_capacity, L"payload text must be non-empty valid UTF-16");
+            cec_contract_error(error, error_capacity, L"invalid-utf16");
             return false;
         }
         pattern_bytes = static_cast<std::size_t>(bytes - 1);
@@ -301,27 +324,25 @@ bool cec_parse_options(int             argc,
     const std::uint32_t worker_count    = cec_resolve_worker_count(options);
     const std::uint32_t worker_sessions = (options->session_count + worker_count - 1U) / worker_count;
     if (options->protocol == cec_protocol::udp && pattern_bytes > CEC_MAXIMUM_UDP_PAYLOAD_BYTES) {
-        cec_contract_error(error, error_capacity, L"UDP payload must not exceed 65507 bytes");
+        cec_contract_error(error, error_capacity, L"payload-size");
         return false;
     }
     if (pattern_bytes != 0) {
         std::size_t batch_bytes = 0;
         if (!cec_checked_product(pattern_bytes, options->pipeline_depth, &batch_bytes) ||
             batch_bytes > CEC_MAXIMUM_TCP_BATCH_BYTES) {
-            cec_contract_error(error, error_capacity, L"TCP payload multiplied by depth must not exceed 64 MiB");
+            cec_contract_error(error, error_capacity, L"payload-size");
             return false;
         }
         std::size_t one_direction    = 0;
         std::size_t required_storage = 0;
         if (!cec_checked_product(batch_bytes, static_cast<std::size_t>(options->session_count), &one_direction) ||
             !cec_checked_product(one_direction, 2U, &required_storage)) {
-            cec_contract_error(error, error_capacity, L"registered memory size overflows size_t");
+            cec_contract_error(error, error_capacity, L"memory-capacity");
             return false;
         }
         if (required_storage > options->memory_bytes) {
-            const std::wstring memory_message = L"registered memory needs " + std::to_wstring(required_storage) +
-                                                L" bytes but /memory is " + std::to_wstring(options->memory_bytes);
-            cec_contract_error(error, error_capacity, memory_message.c_str());
+            cec_contract_error(error, error_capacity, L"memory-capacity");
             return false;
         }
         std::size_t per_session_storage = 0;
@@ -329,7 +350,7 @@ bool cec_parse_options(int             argc,
         if (!cec_checked_product(batch_bytes, 2U, &per_session_storage) ||
             !cec_checked_product(per_session_storage, worker_sessions, &worker_storage) ||
             worker_storage > std::numeric_limits<DWORD>::max()) {
-            cec_contract_error(error, error_capacity, L"registered memory per worker must not exceed 4294967295 bytes");
+            cec_contract_error(error, error_capacity, L"memory-capacity");
             return false;
         }
     }
@@ -337,21 +358,22 @@ bool cec_parse_options(int             argc,
         static_cast<std::size_t>(CEC_RIO_MAX_OUTSTANDING_RECEIVES) + CEC_RIO_MAX_OUTSTANDING_SENDS;
     std::size_t reserved_operations = 0;
     if (!cec_checked_product(operations_per_session, worker_sessions, &reserved_operations)) {
-        cec_contract_error(error, error_capacity, L"completion queue reservation overflows size_t");
+        cec_contract_error(error, error_capacity, L"cq-capacity");
         return false;
     }
     if (reserved_operations > options->cq_capacity) {
-        const std::wstring cq_message = L"completion queue holds " + std::to_wstring(options->cq_capacity) +
-                                        L" entries but a worker with " + std::to_wstring(worker_sessions) +
-                                        L" sessions reserves " + std::to_wstring(reserved_operations);
-        cec_contract_error(error, error_capacity, cq_message.c_str());
+        cec_contract_error(error, error_capacity, L"cq-capacity");
         return false;
     }
     if (options->help) {
         return true;
     }
-    if (!saw_host || options->protocol == cec_protocol::none) {
-        cec_contract_error(error, error_capacity, L"target host and /p tcp or /p udp are required");
+    if (!saw_host) {
+        cec_contract_error(error, error_capacity, L"missing-target");
+        return false;
+    }
+    if (options->protocol == cec_protocol::none) {
+        cec_contract_error(error, error_capacity, L"missing-protocol");
         return false;
     }
     return true;

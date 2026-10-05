@@ -9,7 +9,7 @@
 inline constexpr std::uint32_t CEC_MAX_WORKERS                  = 64U;
 inline constexpr std::uint32_t CEC_RIO_MAX_OUTSTANDING_RECEIVES = 1U;
 inline constexpr std::uint32_t CEC_RIO_MAX_OUTSTANDING_SENDS    = 1U;
-inline constexpr wchar_t       CEC_DEFAULT_PATTERN_FORMAT[]     = L"C++ echo from %ls";
+inline constexpr wchar_t       CEC_DEFAULT_PATTERN_FORMAT[]     = L"echo from %ls";
 
 enum class cec_protocol : std::uint8_t { none = 0, tcp = 1, udp = 2 };
 
@@ -36,7 +36,7 @@ struct cec_options {
     std::uint32_t    pipeline_depth;
     std::uint32_t    pattern_bytes;
     std::uint32_t    run_seconds;
-    std::int32_t     reconnect_seconds;
+    std::int64_t     reconnect_seconds;
     std::uint32_t    report_seconds;
     std::uint32_t    session_count;
     std::uint32_t    worker_count;

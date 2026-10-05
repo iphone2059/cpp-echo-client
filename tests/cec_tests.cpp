@@ -47,7 +47,7 @@ static void cec_test_parser() noexcept {
     error.fill(L'\0');
     cec_test_expect(
         !cec_parse_options(static_cast<int>(invalid.size()), invalid.data(), &rejected, error.data(), error.size()) &&
-            std::wcsstr(error.data(), L"TCP") != nullptr,
+            std::wcsstr(error.data(), L"protocol-option") != nullptr,
         "client rejects TCP pipeline depth for UDP");
 
     wchar_t                 literal[] = L"owned-literal";
@@ -66,7 +66,7 @@ static void cec_test_parser() noexcept {
     error.fill(L'\0');
     cec_test_expect(!cec_parse_options(static_cast<int>(unknown_args.size()), unknown_args.data(), &rejected,
                                        error.data(), error.size()) &&
-                        std::wcsstr(error.data(), L"unknown switch") != nullptr,
+                        std::wcsstr(error.data(), L"unknown-switch") != nullptr,
                     "client reports unknown switch before parsing its value");
 
     std::array<wchar_t*, 5> empty_args{ cec_test_arg(L"client"), cec_test_arg(L"127.0.0.1"), cec_test_arg(L"/p"),
@@ -110,7 +110,7 @@ static void cec_test_parser() noexcept {
     error.fill(L'\0');
     cec_test_expect(!cec_parse_options(static_cast<int>(tcp_fixed_port_many_sessions.size()),
                                        tcp_fixed_port_many_sessions.data(), &rejected, error.data(), error.size()) &&
-                        std::wcscmp(error.data(), L"a fixed /l port requires /c 1") == 0,
+                        std::wcscmp(error.data(), L"local-port-conflict") == 0,
                     "client parser rejects fixed TCP port with multiple sessions");
 
     std::array<wchar_t*, 8> udp_fixed_port_many_sessions{ cec_test_arg(L"client"), cec_test_arg(L"127.0.0.1"),
@@ -120,7 +120,7 @@ static void cec_test_parser() noexcept {
     error.fill(L'\0');
     cec_test_expect(!cec_parse_options(static_cast<int>(udp_fixed_port_many_sessions.size()),
                                        udp_fixed_port_many_sessions.data(), &rejected, error.data(), error.size()) &&
-                        std::wcscmp(error.data(), L"a fixed /l port requires /c 1") == 0,
+                        std::wcscmp(error.data(), L"local-port-conflict") == 0,
                     "client parser rejects fixed UDP port with multiple sessions");
 
     std::array<wchar_t*, 8> fixed_port_one_session{ cec_test_arg(L"client"), cec_test_arg(L"127.0.0.1"),
@@ -140,7 +140,7 @@ static void cec_test_parser() noexcept {
     error.fill(L'\0');
     cec_test_expect(!cec_parse_options(static_cast<int>(fixed_port_conflict_with_help.size()),
                                        fixed_port_conflict_with_help.data(), &rejected, error.data(), error.size()) &&
-                        std::wcscmp(error.data(), L"a fixed /l port requires /c 1") == 0,
+                        std::wcscmp(error.data(), L"local-port-conflict") == 0,
                     "client help does not suppress a fixed-port session conflict");
 }
 
@@ -214,7 +214,7 @@ static void cec_test_cq_batch_reservation() noexcept {
     args[7] = cec_test_arg(L"65");
     cec_test_expect(
         !cec_parse_options(static_cast<int>(args.size()), args.data(), &options, error.data(), error.size()) &&
-            std::wcsstr(error.data(), L"completion queue") != nullptr,
+            std::wcsstr(error.data(), L"cq-capacity") != nullptr,
         "client high-depth batches still reject a CQ below twice the largest shard");
     args[7]  = cec_test_arg(L"64");
     args[11] = cec_test_arg(L"66");
@@ -239,7 +239,7 @@ static void cec_test_resource_validation() noexcept {
     cec_test_expect(parse(memory, 1) && parse(memory) && options.help,
                     "client memory accepts exact send-plus-receive storage with and without help");
     memory[5] = cec_test_arg(L"8193");
-    cec_test_expect(!parse(memory, 1) && !parse(memory) && std::wcsstr(error.data(), L"/memory") != nullptr,
+    cec_test_expect(!parse(memory, 1) && !parse(memory) && std::wcsstr(error.data(), L"memory-capacity") != nullptr,
                     "client memory rejects both directions beyond the budget before help");
 
     std::array<wchar_t*, 15> batch{ cec_test_arg(L"client"),  cec_test_arg(L"127.0.0.1"), cec_test_arg(L"/p"),
@@ -249,7 +249,7 @@ static void cec_test_resource_validation() noexcept {
                                     cec_test_arg(L"/memory"), cec_test_arg(L"134217728"), cec_test_arg(L"/h") };
     cec_test_expect(parse(batch, 1) && parse(batch), "client TCP batch accepts the exact 64 MiB limit before help");
     batch[5] = cec_test_arg(L"33554433");
-    cec_test_expect(!parse(batch, 1) && !parse(batch) && std::wcsstr(error.data(), L"64 MiB") != nullptr,
+    cec_test_expect(!parse(batch, 1) && !parse(batch) && std::wcsstr(error.data(), L"payload-size") != nullptr,
                     "client TCP batch rejects an oversized payload-depth product before help");
 
     std::array<wchar_t*, 17> arena{ cec_test_arg(L"client"),  cec_test_arg(L"127.0.0.1"),  cec_test_arg(L"/p"),
@@ -260,7 +260,7 @@ static void cec_test_resource_validation() noexcept {
                                     cec_test_arg(L"64"),      cec_test_arg(L"/h") };
     cec_test_expect(parse(arena, 1) && parse(arena), "client registered arena accepts a worker below the DWORD limit");
     arena[9] = cec_test_arg(L"32");
-    cec_test_expect(!parse(arena, 1) && !parse(arena) && std::wcsstr(error.data(), L"per worker") != nullptr,
+    cec_test_expect(!parse(arena, 1) && !parse(arena) && std::wcsstr(error.data(), L"memory-capacity") != nullptr,
                     "client registered arena rejects a 4 GiB worker before help even with enough total memory");
     arena[11] = cec_test_arg(L"2");
     cec_test_expect(parse(arena, 1) && parse(arena),
@@ -277,15 +277,16 @@ static void cec_test_text_resources() noexcept {
     };
     std::array<wchar_t*, 13> default_text{
         cec_test_arg(L"client"), cec_test_arg(L"127.0.0.1"), cec_test_arg(L"/p"),       cec_test_arg(L"tcp"),
-        cec_test_arg(L"/c"),     cec_test_arg(L"22795"),     cec_test_arg(L"/threads"), cec_test_arg(L"64"),
+        cec_test_arg(L"/c"),     cec_test_arg(L"27594"),     cec_test_arg(L"/threads"), cec_test_arg(L"64"),
         cec_test_arg(L"/cq"),    cec_test_arg(L"1024"),      cec_test_arg(L"/memory"),  cec_test_arg(L"1048576"),
         cec_test_arg(L"/h")
     };
     cec_test_expect(parse(default_text, 1) && parse(default_text),
                     "client default text fits its UTF-8 storage budget before help");
-    default_text[5] = cec_test_arg(L"22796");
-    cec_test_expect(!parse(default_text, 1) && !parse(default_text) && std::wcsstr(error.data(), L"/memory") != nullptr,
-                    "client default text participates in parser memory validation before help");
+    default_text[5] = cec_test_arg(L"27595");
+    cec_test_expect(
+        !parse(default_text, 1) && !parse(default_text) && std::wcsstr(error.data(), L"memory-capacity") != nullptr,
+        "client default text participates in parser memory validation before help");
 
     std::array<wchar_t*, 15> literal{ cec_test_arg(L"client"),  cec_test_arg(L"127.0.0.1"), cec_test_arg(L"/p"),
                                       cec_test_arg(L"tcp"),     cec_test_arg(L"/d"),        cec_test_arg(L"\u00E9"),
@@ -294,7 +295,7 @@ static void cec_test_text_resources() noexcept {
                                       cec_test_arg(L"/memory"), cec_test_arg(L"1048576"),   cec_test_arg(L"/h") };
     cec_test_expect(parse(literal, 1) && parse(literal), "client literal UTF-8 bytes fit an exact memory budget");
     literal[7] = cec_test_arg(L"262145");
-    cec_test_expect(!parse(literal, 1) && !parse(literal) && std::wcsstr(error.data(), L"/memory") != nullptr,
+    cec_test_expect(!parse(literal, 1) && !parse(literal) && std::wcsstr(error.data(), L"memory-capacity") != nullptr,
                     "client literal memory counts UTF-8 bytes rather than UTF-16 code units before help");
     literal[5] = cec_test_arg(L"A");
     cec_test_expect(parse(literal, 1) && parse(literal),
@@ -304,7 +305,7 @@ static void cec_test_text_resources() noexcept {
     cec_test_expect(parse(literal, 1) && parse(literal),
                     "client paired surrogate literal accounts for four UTF-8 bytes");
     literal[7] = cec_test_arg(L"131073");
-    cec_test_expect(!parse(literal, 1) && !parse(literal) && std::wcsstr(error.data(), L"/memory") != nullptr,
+    cec_test_expect(!parse(literal, 1) && !parse(literal) && std::wcsstr(error.data(), L"memory-capacity") != nullptr,
                     "client surrogate literal rejects the next session beyond its UTF-8 memory boundary");
 
     std::array<wchar_t, 21837> udp_text{};
@@ -314,7 +315,7 @@ static void cec_test_text_resources() noexcept {
                                  cec_test_arg(L"/h") };
     cec_test_expect(parse(udp, 1) && parse(udp), "client UDP text accepts a 65505-byte UTF-8 payload");
     udp_text[21835] = L'\u4E2D';
-    cec_test_expect(!parse(udp, 1) && !parse(udp) && std::wcsstr(error.data(), L"65507") != nullptr,
+    cec_test_expect(!parse(udp, 1) && !parse(udp) && std::wcsstr(error.data(), L"payload-size") != nullptr,
                     "client UDP text rejects a 65508-byte UTF-8 payload before help");
 }
 
@@ -338,7 +339,7 @@ static void cec_test_help_validation() noexcept {
                                           cec_test_arg(L"\u00E9") };
     cec_test_expect(parse(literal_help) && options.help, "client help validates literal text without required fields");
     literal_help[3] = cec_test_arg(L"\xD800");
-    cec_test_expect(!parse(literal_help) && std::wcsstr(error.data(), L"UTF-16") != nullptr,
+    cec_test_expect(!parse(literal_help) && std::wcsstr(error.data(), L"invalid-utf16") != nullptr,
                     "client help rejects unpaired surrogate text before the required-field shortcut");
 
     std::array<wchar_t*, 6> pattern_conflict{ cec_test_arg(L"client"), cec_test_arg(L"/h"), cec_test_arg(L"/d"),
@@ -346,25 +347,25 @@ static void cec_test_help_validation() noexcept {
     cec_test_expect(!parse(pattern_conflict), "client help does not suppress conflicting payload modes");
     std::array<wchar_t*, 6> udp_pipeline{ cec_test_arg(L"client"), cec_test_arg(L"/h"), cec_test_arg(L"/p"),
                                           cec_test_arg(L"udp"),    cec_test_arg(L"/k"), cec_test_arg(L"1") };
-    cec_test_expect(!parse(udp_pipeline) && std::wcsstr(error.data(), L"TCP") != nullptr,
+    cec_test_expect(!parse(udp_pipeline) && std::wcsstr(error.data(), L"protocol-option") != nullptr,
                     "client help rejects an explicit UDP pipeline even at depth one");
     std::array<wchar_t*, 8> cq_conflict{ cec_test_arg(L"client"), cec_test_arg(L"/h"),       cec_test_arg(L"/c"),
                                          cec_test_arg(L"33"),     cec_test_arg(L"/threads"), cec_test_arg(L"1"),
                                          cec_test_arg(L"/cq"),    cec_test_arg(L"64") };
-    cec_test_expect(!parse(cq_conflict) && std::wcsstr(error.data(), L"completion queue") != nullptr,
+    cec_test_expect(!parse(cq_conflict) && std::wcsstr(error.data(), L"cq-capacity") != nullptr,
                     "client help rejects an undersized CQ without required fields");
     cq_conflict[3] = cec_test_arg(L"32");
     cec_test_expect(parse(cq_conflict) && options.help, "client help accepts exact two-operation CQ reservation");
     std::array<wchar_t*, 6> quota_conflict{ cec_test_arg(L"client"), cec_test_arg(L"/h"),
                                             cec_test_arg(L"/c"),     cec_test_arg(L"2"),
                                             cec_test_arg(L"/n"),     cec_test_arg(L"9223372036854775808") };
-    cec_test_expect(!parse(quota_conflict) && std::wcsstr(error.data(), L"finite quota") != nullptr,
+    cec_test_expect(!parse(quota_conflict) && std::wcsstr(error.data(), L"quota-overflow") != nullptr,
                     "client help rejects finite quota overflow before required fields");
     std::array<wchar_t*, 4> numeric{ cec_test_arg(L"client"), cec_test_arg(L"/h"), cec_test_arg(L"/t"),
                                      cec_test_arg(L"0") };
     cec_test_expect(!parse(numeric), "client help does not suppress an out-of-range numeric value");
     numeric[2] = cec_test_arg(L"/foo");
-    cec_test_expect(!parse(numeric) && std::wcsstr(error.data(), L"unknown switch") != nullptr,
+    cec_test_expect(!parse(numeric) && std::wcsstr(error.data(), L"unknown-switch") != nullptr,
                     "client help does not suppress an unknown switch");
 }
 

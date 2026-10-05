@@ -61,8 +61,18 @@ struct cec_engine_metrics {
     std::atomic<std::uint64_t>                 echoed;
     std::atomic<std::uint64_t>                 corrupted;
     std::atomic<std::uint64_t>                 lost;
+    // Attempts the operator stopped before they could complete; they close the
+    // attempted = pending + echoed + corrupted + lost + cancelled identity.
+    std::atomic<std::uint64_t>                 cancelled;
     std::atomic<std::uint64_t>                 bytes;
+    std::atomic<std::uint64_t>                 sent_bytes;
+    std::atomic<std::uint64_t>                 received_bytes;
+    std::atomic<std::uint64_t>                 connections;
+    std::atomic<std::uint64_t>                 reconnects;
+    std::atomic<std::uint64_t>                 active;
     std::atomic<std::uint64_t>                 network_errors;
+    std::atomic<std::uint64_t>                 latency_sum_us;
+    std::atomic<std::uint64_t>                 latency_samples;
     std::array<std::atomic<std::uint64_t>, 64> latency_bins;
 };
 

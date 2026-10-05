@@ -63,7 +63,9 @@ static constexpr ULONG         cec_engine_batch_size        = 256U;
 static constexpr std::uint32_t cec_engine_max_drain_batches = 64U;
 
 static void cec_engine_report(const wchar_t* stage, int error) noexcept {
-    std::fwprintf(stderr, L"%ls failed: native_error=%d\n", stage, error);
+    char text[160]{};
+    (void) WideCharToMultiByte(CP_UTF8, 0, stage, -1, text, sizeof(text), nullptr, nullptr);
+    std::fprintf(stderr, "%s failed: native_error=%d\n", text, error);
 }
 
 static void cec_engine_session_socket_close(cec_engine_session* session) noexcept {
@@ -192,6 +194,8 @@ static void cec_engine_record_latency(cec_engine_metrics*  metrics,
         cec_engine_ticks_to_microseconds(ticks, static_cast<std::uint64_t>(frequency.QuadPart));
     const unsigned bin = std::min<unsigned>(std::bit_width(microseconds) - 1U, 63U);
     metrics->latency_bins[bin].fetch_add(1, std::memory_order_relaxed);
+    metrics->latency_sum_us.fetch_add(microseconds, std::memory_order_relaxed);
+    metrics->latency_samples.fetch_add(1, std::memory_order_relaxed);
 }
 
 static void cec_engine_arm(cec_engine_worker* worker) noexcept {
@@ -240,6 +244,10 @@ static void cec_engine_unschedule(cec_engine_session* session) noexcept {
 }
 
 static void cec_engine_mark_done(cec_engine_session* session) noexcept {
+    const std::uint64_t active = session->owner->metrics->active.load(std::memory_order_relaxed);
+    if (active != 0) {
+        session->owner->metrics->active.fetch_sub(1, std::memory_order_relaxed);
+    }
     cec_engine_unschedule(session);
     cec_engine_session_socket_close(session);
     session->request_queue = RIO_INVALID_RQ;
@@ -410,6 +418,9 @@ static void cec_engine_connection_failed(cec_engine_session* session) noexcept {
     }
     session->owner->metrics->network_errors.fetch_add(1, std::memory_order_relaxed);
     const bool reconnect = session->owner->options->reconnect_seconds >= 0 && !session->owner->stopping;
+    if (reconnect) {
+        session->owner->metrics->reconnects.fetch_add(1, std::memory_order_relaxed);
+    }
     cec_engine_close_attempt(session, reconnect);
 }
 
@@ -476,6 +487,7 @@ static void cec_engine_process_rio_result(cec_engine_worker* worker, const RIORE
             return;
         }
         session->send_offset += result.BytesTransferred;
+        worker->metrics->sent_bytes.fetch_add(result.BytesTransferred, std::memory_order_relaxed);
         if (session->send_offset < session->attempt_bytes) {
             if (!cec_engine_post_send(session)) {
                 cec_engine_connection_failed(session);
@@ -489,7 +501,8 @@ static void cec_engine_process_rio_result(cec_engine_worker* worker, const RIORE
             return;
         }
         session->received_bytes = result.BytesTransferred;
-        session->receive_done   = true;
+        worker->metrics->received_bytes.fetch_add(result.BytesTransferred, std::memory_order_relaxed);
+        session->receive_done = true;
     }
     cec_engine_complete_attempt(session);
 }
@@ -527,6 +540,8 @@ static void cec_engine_process_connect(cec_engine_session* session, BOOL complet
         cec_engine_connection_failed(session);
         return;
     }
+    session->owner->metrics->connections.fetch_add(1, std::memory_order_relaxed);
+    session->owner->metrics->active.fetch_add(1, std::memory_order_relaxed);
     if (!cec_engine_create_request_queue(session) || !cec_engine_begin_attempt(session)) {
         cec_engine_connection_failed(session);
     }
@@ -565,6 +580,12 @@ static void cec_engine_stop_worker(cec_engine_worker* worker) noexcept {
         if (worker->fatal->load(std::memory_order_acquire) && session->state == cec_engine_state::active &&
             !session->attempt_accounted) {
             worker->metrics->lost.fetch_add(session->requested_echoes, std::memory_order_relaxed);
+            session->attempt_accounted = true;
+        } else if (session->state == cec_engine_state::active && !session->attempt_accounted) {
+            // A controlled stop abandons the in-flight attempt: it is neither a loss nor an echo, and
+            // the attempted = pending + echoed + corrupted + lost + cancelled identity counts it as
+            // cancelled.
+            worker->metrics->cancelled.fetch_add(session->requested_echoes, std::memory_order_relaxed);
             session->attempt_accounted = true;
         }
         session->reconnect_after_close = false;
@@ -845,26 +866,46 @@ static void cec_engine_print_metrics(const wchar_t*            phase,
                                      const cec_options*        options,
                                      const cec_engine_metrics* metrics,
                                      ULONGLONG                 elapsed_milliseconds) noexcept {
+    const std::uint64_t attempted         = metrics->claimed.load(std::memory_order_relaxed);
     const std::uint64_t echoed            = metrics->echoed.load(std::memory_order_relaxed);
+    const std::uint64_t corrupted         = metrics->corrupted.load(std::memory_order_relaxed);
+    const std::uint64_t lost              = metrics->lost.load(std::memory_order_relaxed);
+    const std::uint64_t cancelled         = metrics->cancelled.load(std::memory_order_relaxed);
     const std::uint64_t bytes             = metrics->bytes.load(std::memory_order_relaxed);
     const std::uint64_t samples           = cec_engine_sample_count(metrics);
+    const std::uint64_t latency_samples   = metrics->latency_samples.load(std::memory_order_relaxed);
+    const std::uint64_t settled           = echoed + corrupted + lost + cancelled;
+    // attempted = pending + echoed + corrupted + lost + cancelled; a clamped difference keeps the
+    // report meaningful if a counter ever moves ahead of the attempts it belongs to.
+    const std::uint64_t pending           = attempted > settled ? attempted - settled : 0U;
     const double        elapsed_seconds   = static_cast<double>(std::max<ULONGLONG>(elapsed_milliseconds, 1U)) / 1000.0;
     const double        echoes_per_second = static_cast<double>(echoed) / elapsed_seconds;
     const double        mebibytes_per_second = static_cast<double>(bytes) / (1024.0 * 1024.0) / elapsed_seconds;
-    std::fwprintf(stdout,
-                  L"%ls elapsed_ms=%llu sessions=%u echoed=%llu corrupted=%llu lost=%llu network_errors=%llu "
-                  L"bytes=%llu echo_per_sec=%.2f MiB_per_sec=%.2f p50_us~%llu p99_us~%llu p999_us~%llu "
-                  L"max_us~%llu latency_sample=batch\n",
-                  phase, static_cast<unsigned long long>(elapsed_milliseconds), options->session_count,
-                  static_cast<unsigned long long>(echoed),
-                  static_cast<unsigned long long>(metrics->corrupted.load(std::memory_order_relaxed)),
-                  static_cast<unsigned long long>(metrics->lost.load(std::memory_order_relaxed)),
-                  static_cast<unsigned long long>(metrics->network_errors.load(std::memory_order_relaxed)),
-                  static_cast<unsigned long long>(bytes), echoes_per_second, mebibytes_per_second,
-                  static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 50, 100)),
-                  static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 99, 100)),
-                  static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 999, 1000)),
-                  static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 1, 1)));
+    const std::uint64_t mean_us =
+        latency_samples == 0U ? 0U : metrics->latency_sum_us.load(std::memory_order_relaxed) / latency_samples;
+    char phase_text[16]{};
+    (void) WideCharToMultiByte(CP_UTF8, 0, phase, -1, phase_text, sizeof(phase_text), nullptr, nullptr);
+    std::printf(
+        "%s elapsed_ms=%llu sessions=%u active=%llu attempted=%llu pending=%llu echoed=%llu corrupted=%llu lost=%llu "
+        "cancelled=%llu sent_bytes=%llu received_bytes=%llu bytes=%llu connections=%llu reconnects=%llu "
+        "network_errors=%llu echo_per_sec=%.2f MiB_per_sec=%.2f p50_us~%llu p99_us~%llu p999_us~%llu mean_us=%llu "
+        "max_us~%llu latency_sample=batch\n",
+        phase_text, static_cast<unsigned long long>(elapsed_milliseconds), options->session_count,
+        static_cast<unsigned long long>(metrics->active.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(attempted), static_cast<unsigned long long>(pending),
+        static_cast<unsigned long long>(echoed), static_cast<unsigned long long>(corrupted),
+        static_cast<unsigned long long>(lost), static_cast<unsigned long long>(cancelled),
+        static_cast<unsigned long long>(metrics->sent_bytes.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(metrics->received_bytes.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(bytes),
+        static_cast<unsigned long long>(metrics->connections.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(metrics->reconnects.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(metrics->network_errors.load(std::memory_order_relaxed)), echoes_per_second,
+        mebibytes_per_second, static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 50, 100)),
+        static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 99, 100)),
+        static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 999, 1000)),
+        static_cast<unsigned long long>(mean_us),
+        static_cast<unsigned long long>(cec_engine_percentile(metrics, samples, 1, 1)));
 }
 
 cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop_requested) noexcept {
