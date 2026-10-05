@@ -40,6 +40,9 @@ function Invoke-FaultCase {
 Invoke-FaultCase -Mode 'normal' -ExpectedExitCode 0
 Invoke-FaultCase -Mode 'notify_failure' -ExpectedExitCode 4 -ExpectedStage 'test notify failure'
 Invoke-FaultCase -Mode 'notify_duplicate' -ExpectedExitCode 4 -ExpectedStage 'RIONotify duplicate arm'
+Invoke-FaultCase -Mode 'notify_provider_failure' -ExpectedExitCode 4 -ExpectedStage 'RIONotify(client provider)'
+Invoke-FaultCase -Mode 'notify_provider_duplicate' -ExpectedExitCode 4 -ExpectedStage 'RIONotify duplicate arm'
+Invoke-FaultCase -Mode 'notify_precondition_duplicate' -ExpectedExitCode 4 -ExpectedStage 'client notification duplicate arm'
 Invoke-FaultCase -Mode 'corrupt_cq' -ExpectedExitCode 4
 Invoke-FaultCase -Mode 'zero_latency_frequency' -ExpectedExitCode 4
 

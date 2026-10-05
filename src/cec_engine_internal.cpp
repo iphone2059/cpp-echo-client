@@ -77,6 +77,25 @@ bool cec_engine_session_leave_active(cec_engine_session* session) noexcept {
     return true;
 }
 
+void cec_notification_arm(const RIO_EXTENSION_FUNCTION_TABLE* rio,
+                          RIO_CQ                              completion_queue,
+                          bool*                               armed,
+                          std::uint64_t*                      arm_count,
+                          const wchar_t*                      stage) noexcept {
+    if (rio == nullptr || rio->RIONotify == nullptr || armed == nullptr || arm_count == nullptr || stage == nullptr) {
+        cec_engine_fail_fast(L"client notification arm arguments", ERROR_INVALID_PARAMETER);
+    }
+    if (*armed) {
+        cec_engine_fail_fast(L"client notification duplicate arm", ERROR_INVALID_STATE);
+    }
+    const int status = rio->RIONotify(completion_queue);
+    cec_require_rio_notify_success(status, stage);
+    if (!cec_notification_mark_rearmed(armed)) {
+        cec_engine_fail_fast(L"client notification rearm transition", ERROR_INVALID_STATE);
+    }
+    ++*arm_count;
+}
+
 void cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept {
     const cec_rio_notify_outcome outcome = cec_rio_notify_outcome_of(status);
     if (outcome == cec_rio_notify_outcome::armed) {

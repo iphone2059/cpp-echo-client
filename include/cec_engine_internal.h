@@ -281,9 +281,18 @@ class cec_engine_worker_resources {
 bool              cec_engine_session_enter_active(cec_engine_session* session) noexcept;
 bool              cec_engine_session_leave_active(cec_engine_session* session) noexcept;
 void              cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept;
-ULONG             cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept;
-bool              cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept;
-std::uint64_t     cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept;
+
+// One RIONotify transaction: precondition, provider call, status classification, armed transition
+// and arm accounting. The production wrapper keeps the OVERLAPPED reset, so a fake provider can
+// drive the transaction through RIO_EXTENSION_FUNCTION_TABLE::RIONotify without a socket or a port.
+void          cec_notification_arm(const RIO_EXTENSION_FUNCTION_TABLE* rio,
+                                   RIO_CQ                              completion_queue,
+                                   bool*                               armed,
+                                   std::uint64_t*                      arm_count,
+                                   const wchar_t*                      stage) noexcept;
+ULONG         cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept;
+bool          cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept;
+std::uint64_t cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept;
 
 constexpr std::uint64_t cec_latency_bin_lower_bound(unsigned index) noexcept {
     return 1ULL << (index < 63U ? index : 63U);

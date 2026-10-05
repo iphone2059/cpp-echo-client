@@ -199,16 +199,11 @@ static void cec_engine_record_latency(cec_engine_metrics*  metrics,
 }
 
 static void cec_engine_arm(cec_engine_worker* worker) noexcept {
-    if (worker->notification_armed) {
-        cec_engine_fail_fast(L"client notification duplicate arm", ERROR_INVALID_STATE);
-    }
+    // The OVERLAPPED reset stays in the production wrapper: it is not part of the transaction that a
+    // fake provider needs to drive.
     std::memset(&worker->notification_overlapped, 0, sizeof(worker->notification_overlapped));
-    const int status = worker->rio->RIONotify(worker->completion_queue);
-    cec_require_rio_notify_success(status, L"RIONotify(client)");
-    if (!cec_notification_mark_rearmed(&worker->notification_armed)) {
-        cec_engine_fail_fast(L"client notification rearm transition", ERROR_INVALID_STATE);
-    }
-    ++worker->notify_arms;
+    cec_notification_arm(worker->rio, worker->completion_queue, &worker->notification_armed, &worker->notify_arms,
+                         L"RIONotify(client)");
 }
 
 // Lazy arm: the completion queue is armed exactly when RIO work is outstanding and no

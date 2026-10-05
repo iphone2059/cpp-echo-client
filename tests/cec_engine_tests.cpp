@@ -173,6 +173,36 @@ static void cec_engine_test_rio_owner() noexcept {
     cec_engine_test_expect(cec_engine_test_rio_deregisters == 1, "client never deregisters a released arena buffer");
 }
 
+// Fake RIONotify provider: the production transaction reaches the provider through the function
+// table, so a stub table exercises the real precondition, status classification and arm accounting
+// without a socket, a port or a completion queue.
+static int           cec_engine_test_notify_result = ERROR_SUCCESS;
+static std::uint32_t cec_engine_test_notify_calls  = 0;
+static RIO_CQ        cec_engine_test_notify_queue  = RIO_INVALID_CQ;
+
+static int WINAPI cec_engine_test_rio_notify(RIO_CQ completion_queue) noexcept {
+    ++cec_engine_test_notify_calls;
+    cec_engine_test_notify_queue = completion_queue;
+    return cec_engine_test_notify_result;
+}
+
+static void cec_engine_test_notification_provider() noexcept {
+    RIO_EXTENSION_FUNCTION_TABLE table{};
+    table.RIONotify    = &cec_engine_test_rio_notify;
+    const RIO_CQ queue = reinterpret_cast<RIO_CQ>(static_cast<std::uintptr_t>(0x1234U));
+
+    cec_engine_test_notify_result = ERROR_SUCCESS;
+    cec_engine_test_notify_calls  = 0;
+    cec_engine_test_notify_queue  = RIO_INVALID_CQ;
+
+    bool          armed = false;
+    std::uint64_t arms  = 0;
+    cec_notification_arm(&table, queue, &armed, &arms, L"RIONotify(client test)");
+    cec_engine_test_expect(cec_engine_test_notify_calls == 1 && cec_engine_test_notify_queue == queue,
+                           "client notification seam calls the provider with the completion queue");
+    cec_engine_test_expect(armed && arms == 1U, "client notification seam records one successful arm");
+}
+
 static void cec_engine_test_timer() noexcept {
     std::array<cec_timer_node, 4> nodes{};
     std::array<std::uint32_t, 4>  positions{};
@@ -406,6 +436,7 @@ int main() {
     cec_engine_test_owner();
     cec_engine_test_rio_owner();
     cec_engine_test_active_accounting();
+    cec_engine_test_notification_provider();
     cec_engine_test_timer();
     cec_engine_test_timer_model();
     cec_engine_test_qpc_timer();
