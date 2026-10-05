@@ -45,4 +45,4 @@ MSVC 使用 `/std:c++latest`，即已安装工具集所支持的最新 C++ 特�
 
 统计明确报告会话数、echo/s、MiB/s、p50、p99、p999 和近似最大延迟；`~` 表示对数直方图桶的近似下界，`latency_sample=batch` 明确延迟直方图的每个样本对应一次完成的尝试/批次。延迟换算避免乘法溢出，超过整数范围时饱和；最后一个桶仍返回真实下界 `2^63` 微秒。TCP 一个批次包含 `1..k` 个逻辑 echo，有限 `/n` 的最后一批可能少于 `/k`；UDP 每批固定为一个 echo。`echoed` 与 `echo_per_sec` 始终按逻辑 echo 计数，因此不能把批次延迟样本数当作 echo 数。回环吞吐主要反映本机协议栈、调度和内存路径，不代表真实网络或目标 NIC 上限；极限值应结合目标 CPU、NUMA、NIC/RSS 队列和实际尾延迟测量调优。
 
-测试中的 finite-attempt accounting 模型只描述全部尝试已终态的有限场景，不能当作生产主动停止时仍有未完成尝试的 invariant；本实现未在这轮新增 cancelled 统计模型。
+最终记录满足 v1 记账恒等式 `attempted = pending + echoed + corrupted + lost + cancelled`：`attempted` 是已投递的尝试加上终态失败时从未投递的 `/n × /c` 配额，`cancelled` 记录主动停止时被中止的在飞尝试，`pending` 由差值导出。Debug 构建在收尾时对该恒等式与 `active=0` 做 fail-fast 断言，测试模型（`tests/cec_test_models.h`）覆盖成功、首次尝试失败、部分成功后终态失败和主动停止四种终态。

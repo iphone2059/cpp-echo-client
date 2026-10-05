@@ -360,6 +360,13 @@ static bool cec_engine_begin_attempt(cec_engine_session* session) noexcept {
     return true;
 }
 
+// Every session that reaches the active state counts as one connection and joins the active set,
+// for UDP as well as TCP, so the two protocols report the same shape.
+static void cec_engine_mark_connected(cec_engine_session* session) noexcept {
+    session->owner->metrics->connections.fetch_add(1, std::memory_order_relaxed);
+    (void) cec_engine_session_enter_active(session);
+}
+
 static bool cec_engine_start_socket(cec_engine_session* session) noexcept {
     const bool tcp  = session->owner->options->protocol == cec_protocol::tcp;
     session->socket = cec_engine_registered_socket(tcp ? SOCK_STREAM : SOCK_DGRAM, tcp ? IPPROTO_TCP : IPPROTO_UDP);
@@ -384,6 +391,7 @@ static bool cec_engine_start_socket(cec_engine_session* session) noexcept {
             cec_engine_report(L"connect/RQ(UDP client)", WSAGetLastError());
             return false;
         }
+        cec_engine_mark_connected(session);
         return cec_engine_begin_attempt(session);
     }
 
@@ -539,9 +547,12 @@ static void cec_engine_process_connect(cec_engine_session* session, BOOL complet
         cec_engine_connection_failed(session);
         return;
     }
-    session->owner->metrics->connections.fetch_add(1, std::memory_order_relaxed);
-    (void) cec_engine_session_enter_active(session);
-    if (!cec_engine_create_request_queue(session) || !cec_engine_begin_attempt(session)) {
+    if (!cec_engine_create_request_queue(session)) {
+        cec_engine_connection_failed(session);
+        return;
+    }
+    cec_engine_mark_connected(session);
+    if (!cec_engine_begin_attempt(session)) {
         cec_engine_connection_failed(session);
     }
 }
@@ -693,7 +704,6 @@ static bool cec_engine_worker_initialize(cec_engine_worker*                  wor
                                          std::uint32_t                       session_count,
                                          std::uint64_t                       memory_share,
                                          cec_engine_worker_resources*        resources) noexcept {
-    std::memset(worker, 0, sizeof(*worker));
     worker->resources             = resources;
     worker->completion_queue      = RIO_INVALID_CQ;
     worker->registration          = RIO_INVALID_BUFFERID;
@@ -865,7 +875,8 @@ static void cec_engine_print_metrics(const wchar_t*            phase,
                                      const cec_options*        options,
                                      const cec_engine_metrics* metrics,
                                      ULONGLONG                 elapsed_milliseconds) noexcept {
-    const std::uint64_t attempted         = metrics->claimed.load(std::memory_order_relaxed);
+    const std::uint64_t attempted =
+        metrics->claimed.load(std::memory_order_relaxed) + metrics->terminal_unclaimed.load(std::memory_order_relaxed);
     const std::uint64_t echoed            = metrics->echoed.load(std::memory_order_relaxed);
     const std::uint64_t corrupted         = metrics->corrupted.load(std::memory_order_relaxed);
     const std::uint64_t lost              = metrics->lost.load(std::memory_order_relaxed);
@@ -958,13 +969,13 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
         return cec_exit_code::internal;
     }
 
-    const std::uint32_t worker_count = cec_resolve_worker_count(options);
-    cec_engine_worker*  workers      = static_cast<cec_engine_worker*>(
-        HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(cec_engine_worker) * worker_count));
-    cec_heap_owner                                 workers_owner{ workers };
+    const std::uint32_t                            worker_count = cec_resolve_worker_count(options);
+    // A real C++ allocation instead of a zero-filled heap block, so every worker member is
+    // constructed by its default member initialiser rather than by a memset.
+    std::unique_ptr<cec_engine_worker[]>           workers{ new (std::nothrow) cec_engine_worker[worker_count] };
     std::unique_ptr<cec_engine_worker_resources[]> worker_resources{ new (std::nothrow)
                                                                          cec_engine_worker_resources[worker_count] };
-    if (workers == nullptr || !worker_resources) {
+    if (!workers || !worker_resources) {
         return cec_exit_code::network;
     }
     cec_engine_metrics metrics{};
@@ -1028,8 +1039,23 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
     const std::uint64_t never_claimed = cec_unclaimed_echoes(run_quota, metrics.claimed.load(std::memory_order_relaxed),
                                                              stop_requested->load(std::memory_order_acquire));
     if (never_claimed != 0) {
+        // The run intended these echoes and never posted them: they are part of the attempted total
+        // and, because the run failed before reaching them, they are also part of the shortfall.
+        metrics.terminal_unclaimed.fetch_add(never_claimed, std::memory_order_relaxed);
         metrics.lost.fetch_add(never_claimed, std::memory_order_relaxed);
     }
+#ifndef NDEBUG
+    {
+        const std::uint64_t attempted = metrics.claimed.load(std::memory_order_relaxed) +
+                                        metrics.terminal_unclaimed.load(std::memory_order_relaxed);
+        const std::uint64_t settled =
+            metrics.echoed.load(std::memory_order_relaxed) + metrics.corrupted.load(std::memory_order_relaxed) +
+            metrics.lost.load(std::memory_order_relaxed) + metrics.cancelled.load(std::memory_order_relaxed);
+        if (attempted != settled || metrics.active.load(std::memory_order_relaxed) != 0) {
+            cec_engine_fail_fast(L"client terminal accounting", ERROR_INVALID_STATE);
+        }
+    }
+#endif
 
     const std::uint64_t echoed    = metrics.echoed.load(std::memory_order_relaxed);
     const std::uint64_t corrupted = metrics.corrupted.load(std::memory_order_relaxed);

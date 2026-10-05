@@ -54,19 +54,27 @@ static void cec_engine_test_lifecycle() noexcept {
 }
 
 static void cec_engine_test_accounting_model() noexcept {
-    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(10, 8, 1, 1),
-                           "client finite-attempt model accepts exact partition");
-    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(10, 8, 1, 0),
-                           "client finite-attempt model excludes an unfinished controlled stop");
-    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(10, 11, 0, 0),
-                           "client finite-attempt model rejects more echoes than claims");
-    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(10, 8, 3, 0),
-                           "client finite-attempt model rejects an excessive corruption count");
-    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(0, 0, 0, 0),
-                           "client finite-attempt model accepts an empty workload");
-    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(UINT64_MAX, UINT64_MAX - 2ULL, 1, 1) &&
-                               !cec_test_terminal_accounting_model_valid(UINT64_MAX, UINT64_MAX, 1, UINT64_MAX),
-                           "client finite-attempt model handles extreme counts without wrapped sums");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(5, 0, 5, 0, 0, 0),
+                           "v1 terminal model accepts a completed workload");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(0, 5, 0, 0, 5, 0),
+                           "v1 terminal model accepts a first-attempt failure that never posted quota");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(1, 4, 1, 0, 4, 0),
+                           "v1 terminal model accepts a partial success followed by terminal failure");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(3, 0, 1, 0, 0, 2),
+                           "v1 terminal model accepts a controlled stop that cancelled posted attempts");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(0, 0, 0, 0, 0, 0),
+                           "v1 terminal model accepts an empty workload");
+    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(1, 4, 0, 0, 4, 0),
+                           "v1 terminal model rejects quota that is counted lost but never attempted");
+    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(5, 0, 5, 0, 0, 1),
+                           "v1 terminal model rejects double counting a settled attempt");
+    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(5, 0, 6, 0, 0, 0),
+                           "v1 terminal model rejects more echoes than attempts");
+    cec_engine_test_expect(!cec_test_terminal_accounting_model_valid(5, 0, 4, 2, 0, 0),
+                           "v1 terminal model rejects an excessive corruption count");
+    cec_engine_test_expect(cec_test_terminal_accounting_model_valid(UINT64_MAX, 0, UINT64_MAX - 2ULL, 1, 1, 0) &&
+                               !cec_test_terminal_accounting_model_valid(UINT64_MAX, 1, UINT64_MAX, 1, 1, 0),
+                           "v1 terminal model handles extreme counts without wrapped sums");
 }
 
 static void cec_engine_test_owner() noexcept {

@@ -61,9 +61,11 @@ struct cec_engine_metrics {
     std::atomic<std::uint64_t>                 echoed;
     std::atomic<std::uint64_t>                 corrupted;
     std::atomic<std::uint64_t>                 lost;
-    // Attempts the operator stopped before they could complete; they close the
+    // Attempts the operator stopped before they could complete, and attempts that a terminal
+    // failure ended the run before it could post. Together with the claims they close the
     // attempted = pending + echoed + corrupted + lost + cancelled identity.
     std::atomic<std::uint64_t>                 cancelled;
+    std::atomic<std::uint64_t>                 terminal_unclaimed;
     std::atomic<std::uint64_t>                 bytes;
     std::atomic<std::uint64_t>                 sent_bytes;
     std::atomic<std::uint64_t>                 received_bytes;
@@ -108,42 +110,44 @@ struct cec_engine_session {
 };
 
 struct cec_engine_worker {
-    cec_engine_worker_resources*        resources;
-    const RIO_EXTENSION_FUNCTION_TABLE* rio;
-    LPFN_CONNECTEX                      connect_ex;
-    const cec_options*                  options;
-    const SOCKADDR_IN*                  remote_address;
-    const std::byte*                    pattern;
-    std::size_t                         pattern_bytes;
-    std::size_t                         maximum_attempt_bytes;
-    cec_engine_metrics*                 metrics;
-    std::atomic<bool>*                  external_stop;
-    std::atomic<bool>*                  fatal;
-    HANDLE                              port;
-    HANDLE                              thread;
-    OVERLAPPED                          notification_overlapped;
-    RIO_CQ                              completion_queue;
-    RIO_BUFFERID                        registration;
-    char*                               memory;
-    cec_engine_session*                 sessions;
-    cec_timer_node*                     timer_nodes;
-    std::uint32_t*                      timer_positions;
-    cec_timer_heap                      timers;
-    std::uint32_t                       session_count;
-    std::uint32_t                       worker_index;
-    std::uint32_t                       live_sessions;
+    // Every member is initialised here so the worker array can be created with a real C++ allocation
+    // instead of a zero-filled heap block with a memset.
+    cec_engine_worker_resources*        resources             = nullptr;
+    const RIO_EXTENSION_FUNCTION_TABLE* rio                   = nullptr;
+    LPFN_CONNECTEX                      connect_ex            = nullptr;
+    const cec_options*                  options               = nullptr;
+    const SOCKADDR_IN*                  remote_address        = nullptr;
+    const std::byte*                    pattern               = nullptr;
+    std::size_t                         pattern_bytes         = 0;
+    std::size_t                         maximum_attempt_bytes = 0;
+    cec_engine_metrics*                 metrics               = nullptr;
+    std::atomic<bool>*                  external_stop         = nullptr;
+    std::atomic<bool>*                  fatal                 = nullptr;
+    HANDLE                              port                  = nullptr;
+    HANDLE                              thread                = nullptr;
+    OVERLAPPED                          notification_overlapped{};
+    RIO_CQ                              completion_queue = RIO_INVALID_CQ;
+    RIO_BUFFERID                        registration     = RIO_INVALID_BUFFERID;
+    char*                               memory           = nullptr;
+    cec_engine_session*                 sessions         = nullptr;
+    cec_timer_node*                     timer_nodes      = nullptr;
+    std::uint32_t*                      timer_positions  = nullptr;
+    cec_timer_heap                      timers{};
+    std::uint32_t                       session_count          = 0;
+    std::uint32_t                       worker_index           = 0;
+    std::uint32_t                       live_sessions          = 0;
     // RIO posts that have not completed yet; the arm policy keys off this counter and the release
     // precondition requires it to be zero before the completion queue is closed.
-    std::uint32_t                       rio_outstanding;
+    std::uint32_t                       rio_outstanding        = 0;
     // Notification accounting. A bounded wait that expires while RIO work is outstanding and no
     // notification is armed means the queue was never armed for that work, so debug builds treat a
     // non-zero starvation count as a failure instead of silently degrading to timeout polling.
-    std::uint64_t                       notify_arms;
-    std::uint64_t                       notify_deliveries;
-    std::uint64_t                       notify_timeout_wakeups;
-    LARGE_INTEGER                       performance_frequency;
-    bool                                notification_armed;
-    bool                                stopping;
+    std::uint64_t                       notify_arms            = 0;
+    std::uint64_t                       notify_deliveries      = 0;
+    std::uint64_t                       notify_timeout_wakeups = 0;
+    LARGE_INTEGER                       performance_frequency{};
+    bool                                notification_armed = false;
+    bool                                stopping           = false;
 };
 
 static_assert(std::is_trivial_v<cec_worker_lifecycle>);

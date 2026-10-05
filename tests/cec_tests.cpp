@@ -474,17 +474,31 @@ static void cec_test_notification_lifecycle() noexcept {
     cec_notify_model_deliver(&model, 3U);
     cec_test_expect(model.arms == 2U && model.outstanding == 0U && !model.armed,
                     "client notification model stays unarmed once no work is outstanding");
-
-    model.stopped = true;
-    cec_notify_model_deliver(&model, 0U);
-    cec_test_expect(model.arms == 2U && model.empty_deliveries == 1U,
-                    "client notification model never rearms after the stop transition");
+    cec_test_expect(cec_notify_model_may_close(&model),
+                    "client notification model closes the queue after a drained unarmed shutdown");
 
     cec_notify_model_timeout(&model);
     cec_test_expect(model.timeout_wakeups_while_outstanding == 0U,
                     "client notification model reports no starvation for a correct arming sequence");
     cec_test_expect(model.arms >= model.deliveries && model.arms - model.deliveries <= 1U,
                     "client notification model keeps at most one notification in flight");
+
+    // Teardown: work is outstanding and armed when the stop transition arrives, the RIO completions
+    // retire, and the notification itself is never consumed. Closing the queue is still legal.
+    cec_notify_model teardown{};
+    cec_notify_model_post(&teardown, 2U);
+    cec_test_expect(teardown.arms == 1U && teardown.armed && teardown.outstanding == 2U,
+                    "client notification model has one notification in flight during shutdown");
+    teardown.stopped = true;
+    cec_notify_model_retire(&teardown, 2U);
+    cec_test_expect(teardown.outstanding == 0U && teardown.armed && teardown.arms - teardown.deliveries == 1U &&
+                        cec_notify_model_may_close(&teardown),
+                    "client notification model closes the queue with one unconsumed notification");
+
+    cec_notify_model unarmed{};
+    cec_notify_model_deliver(&unarmed, 0U);
+    cec_test_expect(unarmed.violations == 1U && unarmed.deliveries == 0U && !cec_notify_model_may_close(&unarmed),
+                    "client notification model rejects a delivery that was never armed");
 
     cec_notify_model starved{};
     starved.outstanding = 4U;
