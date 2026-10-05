@@ -285,11 +285,25 @@ void              cec_require_rio_notify_success(int status, const wchar_t* stag
 // One RIONotify transaction: precondition, provider call, status classification, armed transition
 // and arm accounting. The production wrapper keeps the OVERLAPPED reset, so a fake provider can
 // drive the transaction through RIO_EXTENSION_FUNCTION_TABLE::RIONotify without a socket or a port.
-void          cec_notification_arm(const RIO_EXTENSION_FUNCTION_TABLE* rio,
-                                   RIO_CQ                              completion_queue,
-                                   bool*                               armed,
-                                   std::uint64_t*                      arm_count,
-                                   const wchar_t*                      stage) noexcept;
+void cec_notification_arm(const RIO_EXTENSION_FUNCTION_TABLE* rio,
+                          RIO_CQ                              completion_queue,
+                          bool*                               armed,
+                          std::uint64_t*                      arm_count,
+                          const wchar_t*                      stage) noexcept;
+
+// Opt-in diagnostics: notify counters are snapshotted after every worker thread has been joined and
+// written once to the file named by CEC_DIAG_FILE, so the hot path never performs file I/O and the
+// frozen stdout/stderr streams stay untouched. A diagnostics failure never changes the run result.
+struct cec_notify_diagnostic_snapshot {
+    std::uint32_t worker;
+    std::uint64_t arms;
+    std::uint64_t deliveries;
+    std::uint64_t timeout_wakeups;
+};
+
+bool          cec_write_diagnostics(const cec_notify_diagnostic_snapshot* values,
+                                    std::uint32_t                         count,
+                                    cec_protocol                          protocol) noexcept;
 ULONG         cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept;
 bool          cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept;
 std::uint64_t cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept;

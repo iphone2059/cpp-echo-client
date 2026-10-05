@@ -1026,6 +1026,15 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
             Sleep(10);
         }
     }
+    // Snapshot the notification counters while the worker threads are joined and their storage is
+    // still alive; the file itself is written once, after every teardown step has completed.
+    std::array<cec_notify_diagnostic_snapshot, CEC_MAX_WORKERS> snapshots{};
+    for (std::uint32_t index = 0; index < initialized; ++index) {
+        snapshots[index].worker          = index;
+        snapshots[index].arms            = workers[index].notify_arms;
+        snapshots[index].deliveries      = workers[index].notify_deliveries;
+        snapshots[index].timeout_wakeups = workers[index].notify_timeout_wakeups;
+    }
     for (std::uint32_t index = 0; index < initialized; ++index) {
         cec_engine_worker_destroy(&workers[index]);
     }
@@ -1058,6 +1067,8 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
     if (!options->quiet || options->stats) {
         cec_engine_print_metrics(L"final", options, &metrics, GetTickCount64() - start);
     }
+    // Opt-in observability: a diagnostics failure must never change the production result.
+    (void) cec_write_diagnostics(snapshots.data(), initialized, options->protocol);
     return cec_classify_result(echoed, corrupted, lost, metrics.network_errors.load(std::memory_order_relaxed),
                                fatal.load(std::memory_order_acquire), stop_requested->load(std::memory_order_acquire));
 }

@@ -77,6 +77,57 @@ bool cec_engine_session_leave_active(cec_engine_session* session) noexcept {
     return true;
 }
 
+bool cec_write_diagnostics(const cec_notify_diagnostic_snapshot* values,
+                           std::uint32_t                         count,
+                           cec_protocol                          protocol) noexcept {
+    if (values == nullptr) {
+        return false;
+    }
+    const DWORD required = GetEnvironmentVariableW(L"CEC_DIAG_FILE", nullptr, 0);
+    if (required == 0) {
+        return true;
+    }
+    wchar_t path[512]{};
+    if (static_cast<std::size_t>(required) > sizeof(path) / sizeof(path[0])) {
+        return false;
+    }
+    if (GetEnvironmentVariableW(L"CEC_DIAG_FILE", path, static_cast<DWORD>(sizeof(path) / sizeof(path[0]))) == 0) {
+        return false;
+    }
+    const HANDLE file =
+        CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const char* protocol_name = protocol == cec_protocol::tcp ? "tcp" : "udp";
+    bool        complete      = true;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const std::uint64_t arms       = values[index].arms;
+        const std::uint64_t deliveries = values[index].deliveries;
+        const std::uint64_t gap        = arms >= deliveries ? arms - deliveries : 0U;
+        char                line[192]{};
+        const int           length =
+            _snprintf_s(line, sizeof(line), _TRUNCATE,
+                        "role=client protocol=%s worker=%u notify_arms=%llu notify_deliveries=%llu notify_gap=%llu "
+                        "timeout_wakeups_while_outstanding=%llu\n",
+                        protocol_name, values[index].worker, static_cast<unsigned long long>(arms),
+                        static_cast<unsigned long long>(deliveries), static_cast<unsigned long long>(gap),
+                        static_cast<unsigned long long>(values[index].timeout_wakeups));
+        if (length <= 0) {
+            complete = false;
+            continue;
+        }
+        DWORD written = 0;
+        if (WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr) == FALSE ||
+            written != static_cast<DWORD>(length)) {
+            complete = false;
+            break;
+        }
+    }
+    (void) CloseHandle(file);
+    return complete;
+}
+
 void cec_notification_arm(const RIO_EXTENSION_FUNCTION_TABLE* rio,
                           RIO_CQ                              completion_queue,
                           bool*                               armed,
