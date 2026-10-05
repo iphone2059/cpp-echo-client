@@ -471,6 +471,20 @@ bool cec_notification_mark_rearmed(bool* armed) noexcept {
     return true;
 }
 
+cec_rio_notify_outcome cec_rio_notify_outcome_of(int status) noexcept {
+    if (status == ERROR_SUCCESS) {
+        return cec_rio_notify_outcome::armed;
+    }
+    if (status == static_cast<int>(WSAEALREADY)) {
+        return cec_rio_notify_outcome::duplicate_arm;
+    }
+    return cec_rio_notify_outcome::invalid;
+}
+
+bool cec_notify_should_arm(bool armed, std::uint32_t outstanding) noexcept {
+    return !armed && outstanding != 0U;
+}
+
 cec_exit_code cec_classify_result(std::uint64_t echoed,
                                   std::uint64_t corrupted,
                                   std::uint64_t lost,

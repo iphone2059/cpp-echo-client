@@ -67,6 +67,17 @@ std::uint64_t cec_unclaimed_echoes(std::uint64_t limit, std::uint64_t claimed, b
 std::uint64_t cec_percentile_target(std::uint64_t total, std::uint64_t numerator, std::uint64_t denominator) noexcept;
 bool          cec_notification_mark_delivered(bool* armed) noexcept;
 bool          cec_notification_mark_rearmed(bool* armed) noexcept;
+
+// Documented RIONotify outcomes: ERROR_SUCCESS arms the queue, WSAEALREADY means a previous
+// RIONotify has not completed yet (a state-machine invariant failure, never a recovery branch),
+// and everything else is a hard error.
+enum class cec_rio_notify_outcome : std::uint8_t { armed = 0, duplicate_arm = 1, invalid = 2 };
+
+cec_rio_notify_outcome cec_rio_notify_outcome_of(int status) noexcept;
+
+// Lazy-arm policy: the worker arms its completion queue only while RIO work is outstanding and no
+// notification is already pending, so "armed" always means exactly one RIONotify is in flight.
+bool          cec_notify_should_arm(bool armed, std::uint32_t outstanding) noexcept;
 cec_exit_code cec_classify_result(std::uint64_t echoed,
                                   std::uint64_t corrupted,
                                   std::uint64_t lost,

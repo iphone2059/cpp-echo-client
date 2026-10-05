@@ -56,9 +56,16 @@ static void cec_timer_sift_down(cec_timer_heap* heap, std::uint32_t position) no
 }
 
 void cec_require_rio_notify_success(int status, const wchar_t* stage) noexcept {
-    if (status != ERROR_SUCCESS) {
-        cec_engine_fail_fast(stage, status);
+    const cec_rio_notify_outcome outcome = cec_rio_notify_outcome_of(status);
+    if (outcome == cec_rio_notify_outcome::armed) {
+        return;
     }
+    if (outcome == cec_rio_notify_outcome::duplicate_arm) {
+        // A correct state machine never arms a queue whose previous notification is still pending,
+        // so report this distinctly instead of folding it into a generic RIONotify failure.
+        cec_engine_fail_fast(L"RIONotify duplicate arm", status);
+    }
+    cec_engine_fail_fast(stage, status);
 }
 
 ULONG cec_require_valid_dequeue_count(ULONG count, const wchar_t* stage) noexcept {
@@ -293,7 +300,7 @@ void cec_rio_cq_owner::reset(const RIO_EXTENSION_FUNCTION_TABLE* rio, RIO_CQ val
 
 bool cec_worker_may_release(const cec_worker_lifecycle* lifecycle) noexcept {
     return lifecycle != nullptr && lifecycle->phase == cec_worker_phase::stopped && lifecycle->live_sessions == 0 &&
-           lifecycle->total_outstanding == 0 && !lifecycle->notification_armed;
+           lifecycle->total_outstanding == 0 && lifecycle->rio_outstanding == 0;
 }
 
 std::uint64_t cec_engine_ticks_to_microseconds(std::uint64_t ticks, std::uint64_t frequency) noexcept {

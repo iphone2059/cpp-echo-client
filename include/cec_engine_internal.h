@@ -23,7 +23,10 @@ struct cec_worker_lifecycle {
     cec_worker_phase phase;
     std::uint32_t    live_sessions;
     std::uint32_t    total_outstanding;
-    bool             notification_armed;
+    // The teardown contract retires every RIO operation before closing the completion queue and
+    // never waits for the last RIONotify delivery, so the release precondition checks outstanding
+    // RIO work rather than whether a notification happened to be observed.
+    std::uint32_t    rio_outstanding;
 };
 
 struct cec_timer_node {
@@ -75,6 +78,7 @@ struct cec_engine_session {
     cec_engine_state   state;
     std::uint32_t      index;
     std::uint32_t      outstanding;
+    std::uint32_t      rio_outstanding;
     std::uint64_t      requested_echoes;
     std::uint64_t      remaining_echoes;
     std::size_t        attempt_bytes;
@@ -114,6 +118,9 @@ struct cec_engine_worker {
     std::uint32_t                       session_count;
     std::uint32_t                       worker_index;
     std::uint32_t                       live_sessions;
+    // RIO posts that have not completed yet; the arm policy keys off this counter and the release
+    // precondition requires it to be zero before the completion queue is closed.
+    std::uint32_t                       rio_outstanding;
     LARGE_INTEGER                       performance_frequency;
     bool                                notification_armed;
     bool                                stopping;

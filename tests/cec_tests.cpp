@@ -1,3 +1,4 @@
+#include "cec_notify_model.h"
 #include "cec_types.h"
 
 #include <algorithm>
@@ -402,6 +403,57 @@ static void cec_test_notification() noexcept {
     cec_test_expect(!cec_notification_mark_delivered(&armed), "client CQ delivery cannot consume notification twice");
     cec_test_expect(cec_notification_mark_rearmed(&armed) && armed, "client CQ drain rearms notification once");
     cec_test_expect(!cec_notification_mark_rearmed(&armed), "client CQ cannot be rearmed twice");
+
+    // Documented RIONotify return values: only ERROR_SUCCESS arms the queue, WSAEALREADY means a
+    // previous notification has not completed (an invariant failure, never a recovery branch).
+    const cec_notify_status_case status_cases[] = {
+        { ERROR_SUCCESS,           cec_rio_notify_outcome::armed,         "client RIONotify success is the only arm outcome" },
+        { WSAEALREADY,             cec_rio_notify_outcome::duplicate_arm,
+         "client RIONotify duplicate arm is an invariant failure"                                                            },
+        { WSAEINVAL,               cec_rio_notify_outcome::invalid,       "client RIONotify invalid queue is a hard error"   },
+        { ERROR_NOT_ENOUGH_MEMORY, cec_rio_notify_outcome::invalid,       "client RIONotify unknown status is a hard error"  },
+    };
+    for (const cec_notify_status_case& item : status_cases) {
+        cec_test_expect(cec_rio_notify_outcome_of(item.status) == item.expected, item.name);
+    }
+
+    cec_test_expect(!cec_notify_should_arm(false, 0U) && cec_notify_should_arm(false, 1U) &&
+                        !cec_notify_should_arm(true, 0U) && !cec_notify_should_arm(true, 1U),
+                    "client arms only while RIO work is outstanding and no notification is pending");
+}
+
+static void cec_test_notification_lifecycle() noexcept {
+    cec_notify_model model{};
+    cec_notify_model_post(&model, 3U);
+    cec_test_expect(model.arms == 1U && model.armed, "client notification model arms once for a posted batch");
+
+    cec_notify_model_post(&model, 2U);
+    cec_test_expect(model.arms == 1U, "client notification model never arms twice while a notification is pending");
+
+    cec_notify_model_deliver(&model, 2U);
+    cec_test_expect(model.arms == 2U && model.deliveries == 1U && model.outstanding == 3U,
+                    "client notification model rearms when a delivery leaves work outstanding");
+
+    cec_notify_model_deliver(&model, 3U);
+    cec_test_expect(model.arms == 2U && model.outstanding == 0U && !model.armed,
+                    "client notification model stays unarmed once no work is outstanding");
+
+    model.stopped = true;
+    cec_notify_model_deliver(&model, 0U);
+    cec_test_expect(model.arms == 2U && model.empty_deliveries == 1U,
+                    "client notification model never rearms after the stop transition");
+
+    cec_notify_model_timeout(&model);
+    cec_test_expect(model.timeout_wakeups_while_outstanding == 0U,
+                    "client notification model reports no starvation for a correct arming sequence");
+    cec_test_expect(model.arms >= model.deliveries && model.arms - model.deliveries <= 1U,
+                    "client notification model keeps at most one notification in flight");
+
+    cec_notify_model starved{};
+    starved.outstanding = 4U;
+    cec_notify_model_timeout(&starved);
+    cec_test_expect(starved.timeout_wakeups_while_outstanding == 1U && !starved.armed,
+                    "client notification model exposes a missed arm as a timeout with work outstanding");
 }
 
 static void cec_test_result_classification() noexcept {
@@ -430,6 +482,7 @@ int main() {
     cec_test_patterns();
     cec_test_attempt_claim();
     cec_test_notification();
+    cec_test_notification_lifecycle();
     cec_test_result_classification();
     std::printf("client_contract_failures=%d\n", cec_test_failures);
     return cec_test_failures == 0 ? 0 : 1;

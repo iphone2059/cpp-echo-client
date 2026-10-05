@@ -58,10 +58,9 @@ class cec_engine_timer_resolution {
     }
 };
 
-static constexpr ULONG_PTR     cec_engine_stop_key                             = 1U;
-static constexpr ULONG         cec_engine_batch_size                           = 256U;
-static constexpr std::uint32_t cec_engine_max_drain_batches                    = 64U;
-static constexpr ULONGLONG     cec_engine_notification_retirement_milliseconds = 5000ULL;
+static constexpr ULONG_PTR     cec_engine_stop_key          = 1U;
+static constexpr ULONG         cec_engine_batch_size        = 256U;
+static constexpr std::uint32_t cec_engine_max_drain_batches = 64U;
 
 static void cec_engine_report(const wchar_t* stage, int error) noexcept {
     std::fwprintf(stderr, L"%ls failed: native_error=%d\n", stage, error);
@@ -207,6 +206,16 @@ static void cec_engine_arm(cec_engine_worker* worker) noexcept {
     }
 }
 
+// Lazy arm: the completion queue is armed exactly when RIO work is outstanding and no
+// notification is pending, and every RIO post and drain calls it, so a missed arm would surface as
+// blocked waits in the notification counters rather than as a hang.
+static void cec_engine_maybe_arm(cec_engine_worker* worker) noexcept {
+    if (!cec_notify_should_arm(worker->notification_armed, worker->rio_outstanding)) {
+        return;
+    }
+    cec_engine_arm(worker);
+}
+
 static ULONGLONG cec_engine_now() noexcept {
     LARGE_INTEGER value{};
     if (QueryPerformanceCounter(&value) == FALSE) {
@@ -285,6 +294,9 @@ static bool cec_engine_post_send(cec_engine_session* session) noexcept {
         return false;
     }
     ++session->outstanding;
+    ++session->rio_outstanding;
+    ++session->owner->rio_outstanding;
+    cec_engine_maybe_arm(session->owner);
     return true;
 }
 
@@ -300,6 +312,9 @@ static bool cec_engine_post_receive(cec_engine_session* session) noexcept {
         return false;
     }
     ++session->outstanding;
+    ++session->rio_outstanding;
+    ++session->owner->rio_outstanding;
+    cec_engine_maybe_arm(session->owner);
     return true;
 }
 
@@ -433,10 +448,12 @@ static void cec_engine_process_rio_result(cec_engine_worker* worker, const RIORE
         cec_engine_fail_fast(L"client RIO RequestContext", ERROR_INVALID_DATA);
     }
     cec_engine_session* session = request->session;
-    if (session->outstanding == 0) {
+    if (session->outstanding == 0 || session->rio_outstanding == 0 || worker->rio_outstanding == 0) {
         cec_engine_fail_fast(L"client RIO outstanding count", ERROR_INVALID_DATA);
     }
     --session->outstanding;
+    --session->rio_outstanding;
+    --worker->rio_outstanding;
     if (session->state == cec_engine_state::closing) {
         if (session->outstanding == 0) {
             cec_engine_finish_close(session);
@@ -562,7 +579,7 @@ static void cec_engine_stop_worker(cec_engine_worker* worker) noexcept {
 
 static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
     cec_engine_worker* worker = static_cast<cec_engine_worker*>(parameter);
-    cec_engine_arm(worker);
+    cec_engine_maybe_arm(worker);
     for (std::uint32_t index = 0; index < worker->session_count; ++index) {
         if (!cec_engine_start_socket(&worker->sessions[index])) {
             cec_engine_connection_failed(&worker->sessions[index]);
@@ -588,8 +605,9 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
                 cec_engine_fail_fast(L"client notification delivery transition", ERROR_INVALID_STATE);
             }
             cec_engine_drain(worker);
-            // A bounded drain may leave results queued; rearm also notifies an already nonempty CQ.
-            cec_engine_arm(worker);
+            // A bounded drain may leave results queued; arming an already nonempty CQ notifies
+            // immediately, so the rearm only has to happen while work is still outstanding.
+            cec_engine_maybe_arm(worker);
         } else if (overlapped == nullptr && key == cec_engine_stop_key) {
             cec_engine_stop_worker(worker);
         } else if (overlapped != nullptr && key > cec_engine_stop_key) {
@@ -615,34 +633,13 @@ static DWORD WINAPI cec_engine_worker_thread(void* parameter) noexcept {
             cec_engine_stop_worker(worker);
         }
     }
-    if (worker->notification_armed) {
-        if (PostQueuedCompletionStatus(worker->port, 0, 0, &worker->notification_overlapped) == FALSE) {
-            cec_engine_fail_fast(L"PostQueuedCompletionStatus(client notification shutdown)",
-                                 static_cast<int>(GetLastError()));
-        }
-        // The port queue is FIFO, so a completion that raced the shutdown (a real RIONotify
-        // delivery, a stop packet, or a residual ConnectEx result) can precede the packet just
-        // posted. Drain until the notification itself is retired instead of assuming order.
-        const ULONGLONG deadline = GetTickCount64() + cec_engine_notification_retirement_milliseconds;
-        bool            retired  = false;
-        while (!retired) {
-            const ULONGLONG now       = GetTickCount64();
-            const DWORD     remaining = now >= deadline ? 0U : static_cast<DWORD>(deadline - now);
-            if (remaining == 0U) {
-                cec_engine_fail_fast(L"client notification shutdown timeout", ERROR_TIMEOUT);
-            }
-            DWORD       transferred = 0;
-            ULONG_PTR   key         = 0;
-            OVERLAPPED* overlapped  = nullptr;
-            if (GetQueuedCompletionStatus(worker->port, &transferred, &key, &overlapped, remaining) == FALSE) {
-                cec_engine_fail_fast(L"GetQueuedCompletionStatus(client notification shutdown)",
-                                     static_cast<int>(GetLastError()));
-            }
-            retired = overlapped == &worker->notification_overlapped;
-        }
-        if (!cec_notification_mark_delivered(&worker->notification_armed)) {
-            cec_engine_fail_fast(L"client notification shutdown transition", ERROR_INVALID_STATE);
-        }
+    // Teardown contract: the loop only returns once every session has retired all of its RIO work,
+    // so the completion queue can be closed without waiting for the last RIONotify delivery; the
+    // notification OVERLAPPED stays valid until the IOCP handle is closed in
+    // cec_engine_worker_destroy, which is the last object that can reference it. Forging an IOCP
+    // packet here would claim a notification that RIO never delivered.
+    if (worker->rio_outstanding != 0) {
+        cec_engine_fail_fast(L"client RIO cleanup with outstanding operations", ERROR_IO_INCOMPLETE);
     }
     return worker->fatal->load(std::memory_order_acquire) ? 1U : 0U;
 }
@@ -777,7 +774,7 @@ static void cec_engine_worker_destroy(cec_engine_worker* worker) noexcept {
             outstanding += worker->sessions[index].outstanding;
         }
         const cec_worker_lifecycle lifecycle{ cec_worker_phase::stopped, worker->live_sessions, outstanding,
-                                              worker->notification_armed };
+                                              worker->rio_outstanding };
         if (!cec_worker_may_release(&lifecycle) || worker->timers.size != 0) {
             cec_engine_fail_fast(L"client worker release precondition", ERROR_INVALID_STATE);
         }

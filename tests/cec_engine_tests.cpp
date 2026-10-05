@@ -30,12 +30,13 @@ static void cec_engine_test_expect(bool condition, const char* name) noexcept {
 }
 
 static void cec_engine_test_lifecycle() noexcept {
-    cec_worker_lifecycle lifecycle{ cec_worker_phase::draining, 0, 0, true };
+    cec_worker_lifecycle lifecycle{ cec_worker_phase::draining, 0, 0, 0 };
     cec_engine_test_expect(!cec_worker_may_release(&lifecycle), "client release requires stopped phase");
-    lifecycle.phase = cec_worker_phase::stopped;
-    cec_engine_test_expect(!cec_worker_may_release(&lifecycle), "client release requires notification resolved");
-    lifecycle.notification_armed = false;
-    lifecycle.live_sessions      = 1;
+    lifecycle.phase           = cec_worker_phase::stopped;
+    lifecycle.rio_outstanding = 1;
+    cec_engine_test_expect(!cec_worker_may_release(&lifecycle), "client release requires no outstanding RIO work");
+    lifecycle.rio_outstanding = 0;
+    lifecycle.live_sessions   = 1;
     cec_engine_test_expect(!cec_worker_may_release(&lifecycle), "client release requires no live sessions");
     lifecycle.live_sessions     = 0;
     lifecycle.total_outstanding = 1;

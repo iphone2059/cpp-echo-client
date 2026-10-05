@@ -12,6 +12,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (std::wcscmp(argv[1], L"notify_failure") == 0) {
         cec_require_rio_notify_success(WSAEINVAL, L"test notify failure");
+    } else if (std::wcscmp(argv[1], L"notify_duplicate") == 0) {
+        // WSAEALREADY means a previous RIONotify has not completed: the state machine armed twice,
+        // so the process must report the duplicate-arm stage instead of the caller's stage.
+        cec_require_rio_notify_success(WSAEALREADY, L"test notify duplicate");
     } else if (std::wcscmp(argv[1], L"corrupt_cq") == 0) {
         static_cast<void>(cec_require_valid_dequeue_count(RIO_CORRUPT_CQ, L"test corrupt CQ"));
     } else if (std::wcscmp(argv[1], L"zero_latency_frequency") == 0) {
