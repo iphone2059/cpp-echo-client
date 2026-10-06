@@ -8,12 +8,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Project      = 'cpp-echo-client'
-$Implementation = 'cpp'
-$Component    = 'client'
-$PeerKind     = 'server'
-
-$Root       = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+# Identity is derived from the repository name, so this file is byte-identical in every
+# implementation: the project is <implementation>-echo-<component>.
+$Root           = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$Project        = Split-Path $Root -Leaf
+$ProjectPattern = '^(cpp|rust|zig|swift)-echo-(client|server)\z'
+if ($Project -notmatch $ProjectPattern) {
+    throw "unexpected project name: $Project"
+}
+$Implementation = $Matches[1]
+$Component      = $Matches[2]
+$PeerKind       = if ($Component -eq 'client') { 'server' } else { 'client' }
 $ResultsDir = Join-Path $PSScriptRoot 'results'
 $ArchiveDir = Join-Path $ResultsDir 'archive'
 New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
@@ -41,6 +46,13 @@ foreach ($pair in @(@('executable', $Executable), @($PeerKind, $Peer))) {
 $GitHead  = (git -C $Root rev-parse HEAD 2>$null)
 $GitDirty = 'unknown'
 if ($GitHead) { $GitDirty = (@(git -C $Root status --porcelain 2>$null).Count -gt 0).ToString().ToLower() } else { $GitHead = 'unknown' }
+
+# The binary contract this kit verifies; the reference implementation defines the value.
+$ContractFile    = Join-Path $PSScriptRoot 'contract-version.txt'
+$ContractVersion = (Get-Content -LiteralPath $ContractFile -Raw).Trim()
+if ($ContractVersion -ne 'echo-binary-contract-v1') {
+    throw "contract-version.txt does not declare echo-binary-contract-v1"
+}
 
 $Columns = @('timestamp','project','implementation','component','git_head','git_dirty','executable','build_type',
     'test_id','category','protocol','result','exit_code','expected_exit_code','duration_ms','sessions','workers',
@@ -392,7 +404,6 @@ $failed = @($Rows | Where-Object { $_.result -eq 'FAIL' })
 Write-Host ("verification " + $Project + ": " + $Rows.Count + " cases, " + $failed.Count + " failed")
 Write-Host ("results: " + (Join-Path $ResultsDir 'latest.csv'))
 if ($failed.Count -ne 0) { Write-Host ("failed: " + (($failed | ForEach-Object { $_.test_id }) -join ', ')) }
-
 
 
 
