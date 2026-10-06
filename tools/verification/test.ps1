@@ -359,6 +359,10 @@ if ($Component -eq 'client') {
     Invoke-Test -TestId 'PARSE-003' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'PARSE-004' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '65537') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'PARSE-005' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-003' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-004' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/n', '1', '/d', 'x') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
     Invoke-Test -TestId 'HELP-002' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'HELP-003' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/rc', '1', '/l', '127.0.0.1:1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
@@ -383,6 +387,8 @@ if ($Component -eq 'client') {
     Invoke-Test -TestId 'CLI-003' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -WithPeer $false
     Invoke-Test -TestId 'PARSE-001' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/t', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'PARSE-002' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/t', '1', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/s', '1234') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
     Invoke-StopTest -TestId 'TCP-001' -Category 'TCP' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/z', '256', '/q', '/stats')
     Invoke-StopTest -TestId 'TCP-002' -Category 'TCP' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '200', '/c', '4', '/k', '8', '/z', '1024', '/q', '/stats')
@@ -404,8 +410,6 @@ $failed = @($Rows | Where-Object { $_.result -eq 'FAIL' })
 Write-Host ("verification " + $Project + ": " + $Rows.Count + " cases, " + $failed.Count + " failed")
 Write-Host ("results: " + (Join-Path $ResultsDir 'latest.csv'))
 if ($failed.Count -ne 0) { Write-Host ("failed: " + (($failed | ForEach-Object { $_.test_id }) -join ', ')) }
-
-
 
 
 
