@@ -429,5 +429,9 @@ $failed = @($Rows | Where-Object { $_.result -eq 'FAIL' })
 Write-Host ("verification " + $Project + ": " + $Rows.Count + " cases, " + $failed.Count + " failed")
 Write-Host ("results: " + (Join-Path $ResultsDir 'latest.csv'))
 if ($failed.Count -ne 0) { Write-Host ("failed: " + (($failed | ForEach-Object { $_.test_id }) -join ', ')) }
-
+# A filter that matched nothing is not a green run: it means the run proved nothing.
+if ($Rows.Count -eq 0) { Write-Host "no cases matched the filter"; exit 1 }
+# The exit code is the machine-readable verdict; a run with failures must not look like success.
+if ($failed.Count -ne 0) { exit 1 }
+exit 0
 
