@@ -263,8 +263,8 @@ function Invoke-Test {
             pending = $metrics['pending']; corrupted = $metrics['corrupted']; lost = $metrics['lost']
             cancelled = $metrics['cancelled']; connections = $metrics['connections']; reconnects = $metrics['reconnects']
             network_errors = $metrics['network_errors']; echo_per_sec = $metrics['echo_per_sec']
-            mib_per_sec = $metrics['MiB_per_sec']; p50_us = $metrics['p50_us~']; p99_us = $metrics['p99_us~']
-            p999_us = $metrics['p999_us~']; notify_arms = $notify.arms; notify_deliveries = $notify.deliveries
+            mib_per_sec = $metrics['MiB_per_sec']; p50_us = $metrics['p50_us']; p99_us = $metrics['p99_us']
+            p999_us = $metrics['p999_us']; notify_arms = $notify.arms; notify_deliveries = $notify.deliveries
             notify_gap = $notify.gap; notify_timeouts = $notify.timeouts
             stdout_valid = ($stdout -match 'final ').ToString().ToLower()
             stderr_empty = ($stderr.Trim() -eq '').ToString().ToLower()
@@ -434,4 +434,3 @@ if ($Rows.Count -eq 0) { Write-Host "no cases matched the filter"; exit 1 }
 # The exit code is the machine-readable verdict; a run with failures must not look like success.
 if ($failed.Count -ne 0) { exit 1 }
 exit 0
-
