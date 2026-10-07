@@ -381,6 +381,10 @@ if ($Component -eq 'client') {
     # and the reference classifies that as lost plus an echo failure, so exit 3 is tolerated here while
     # corruption never is.
     Invoke-Test -TestId 'UDP-002' -Category 'UDP' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '20', '/z', '1', '/q', '/stats') -ExpectPattern 'corrupted=0' -AllowExitCodes @(3)
+    # The default payload is part of the contract: 'echo from <host>' is 19 bytes for 127.0.0.1, so two
+    # echoes account for 38 bytes. Every port must put the same bytes on the wire, and this is the only
+    # case that pins the default payload length instead of the echo count.
+    Invoke-Test -TestId 'PAYLOAD-001' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '2', '/c', '1', '/q', '/stats') -ExpectPattern 'bytes=38'
     Invoke-Test -TestId 'QUOTA-001' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=1'
     Invoke-Test -TestId 'QUOTA-002' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '2', '/z', '256', '/q', '/stats')
     Invoke-Test -TestId 'TIMEOUT-001' -Category 'TIMEOUT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/t', '1', '/w', '5', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
@@ -425,6 +429,5 @@ $failed = @($Rows | Where-Object { $_.result -eq 'FAIL' })
 Write-Host ("verification " + $Project + ": " + $Rows.Count + " cases, " + $failed.Count + " failed")
 Write-Host ("results: " + (Join-Path $ResultsDir 'latest.csv'))
 if ($failed.Count -ne 0) { Write-Host ("failed: " + (($failed | ForEach-Object { $_.test_id }) -join ', ')) }
-
 
 
