@@ -291,6 +291,9 @@ function Invoke-StopTest {
     $serverDone = $false
     $serverExit = -1
     $clientDone = $false
+    $peerExit = -1
+    $peerOk = $false
+    $serverFinalLines = 0
     $serverErr = ''
     $metrics = @{}
     $notify = @{ arms = ''; deliveries = ''; gap = ''; timeouts = '' }
@@ -300,15 +303,30 @@ function Invoke-StopTest {
         $server = Start-Process -FilePath $Executable -ArgumentList @('/p', $Protocol, '/s', [string]$port, '/w', '5', '/q', '/stats') -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -WindowStyle Hidden
         Wait-ForServer -Port $port -ForProtocol $Protocol | Out-Null
         $arguments = @($PeerArguments | ForEach-Object { $_ -replace '@PORT@', [string]$port })
+        # The peer's /n is the quota the case expects it to complete on a reliable transport.
+        $quota = 0
+        for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/n') { [void][int64]::TryParse($arguments[$i + 1], [ref]$quota) } }
+        # The quota is per session, so a case with /c sessions completes /n times /c echoes in total.
+        $peerSessions = 1
+        for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/c') { [void][int64]::TryParse($arguments[$i + 1], [ref]$peerSessions) } }
+        if ($peerSessions -le 0) { $peerSessions = 1 }
+        $expectedEchoes = $quota * $peerSessions
+        # Only a finite TCP run that is expected to finish can be reconciled byte for byte: a stopped run
+        # leaves one partial echo on the server and none on the peer, and UDP may lose datagrams.
+        $strictQuota = ($Protocol -eq 'tcp') -and ($quota -gt 0) -and ($Category -in @('TCP','CAPACITY','ADMISSION','RESET'))
         $quoted = @($arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
         $client = Start-Process -FilePath $Peer -ArgumentList $quoted -RedirectStandardOutput $peerOut -RedirectStandardError $peerErr -PassThru -WindowStyle Hidden
         $clientDone = $client.WaitForExit($TimeoutMs)
+        if ($clientDone) { $peerExit = $client.ExitCode; $peerOk = $true }
         if (-not $clientDone) { $client.Kill($true) | Out-Null }
         $serverDone = $server.WaitForExit(25000)
         if ($serverDone) { $serverExit = $server.ExitCode } else { $server.Kill($true) | Out-Null }
         $serverErr = Read-TextFile -Path $errFile
         $peerMetrics = Convert-FinalLine -Text (Read-TextFile -Path $peerOut)
-        $metrics = Convert-FinalLine -Text (Read-TextFile -Path $outFile)
+        $serverText = Read-TextFile -Path $outFile
+        $serverFinalLines = @($serverText -split "?
+" | Where-Object { $_ -match '^final ' }).Count
+        $metrics = Convert-FinalLine -Text $serverText
         $notify = Convert-Diagnostics -Path $diagFile
     } catch {
         $failure = $_.Exception.Message
@@ -325,6 +343,14 @@ function Invoke-StopTest {
         elseif ($serverErr.Trim() -ne '') { $message = 'server stderr: ' + $serverErr.Trim() }
         elseif (-not $clientDone) { $message = 'peer did not stop' }
         elseif ($Category -ne 'CLI' -and ([int64]($peerMetrics['echoed']) -le 0)) { $message = 'peer reported no echo traffic' }
+        elseif ($Category -ne 'CLI' -and -not $peerOk) { $message = 'peer exit ' + $peerExit }
+        elseif ([int64]($peerMetrics['corrupted']) -gt 0) { $message = 'peer reported corrupted echoes: ' + $peerMetrics['corrupted'] }
+        elseif ($Protocol -eq 'tcp' -and [int64]($peerMetrics['lost']) -gt 0) { $message = 'peer reported lost echoes: ' + $peerMetrics['lost'] }
+        elseif ($serverFinalLines -ne 1) { $message = 'expected exactly one final line, saw ' + $serverFinalLines }
+        elseif ($strictQuota -and [int64]($peerMetrics['echoed']) -ne $expectedEchoes) { $message = 'peer echoed ' + $peerMetrics['echoed'] + ' of ' + $expectedEchoes + ' (' + $quota + ' per session over ' + $peerSessions + ')' }
+        elseif ($strictQuota -and $metrics['bytes'] -ne '' -and $peerMetrics['bytes'] -ne '' -and $metrics['bytes'] -ne $peerMetrics['bytes']) { $message = 'byte accounting differs: server ' + $metrics['bytes'] + ', peer ' + $peerMetrics['bytes'] }
+        elseif ($Protocol -eq 'tcp' -and $metrics['active'] -ne '' -and $metrics['active'] -ne '0') { $message = 'server still reports active=' + $metrics['active'] }
+        elseif ($Protocol -eq 'udp' -and $metrics['outstanding'] -ne '' -and $metrics['outstanding'] -ne '0') { $message = 'server still reports outstanding=' + $metrics['outstanding'] }
         else { $result = 'PASS'; $message = 'ok' }
         Add-Row @{
             test_id = $TestId; category = $Category; protocol = $Protocol; result = $result
