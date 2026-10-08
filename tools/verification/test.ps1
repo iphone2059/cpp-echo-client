@@ -385,6 +385,10 @@ if ($Component -eq 'client') {
     # echoes account for 38 bytes. Every port must put the same bytes on the wire, and this is the only
     # case that pins the default payload length instead of the echo count.
     Invoke-Test -TestId 'PAYLOAD-001' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '2', '/c', '1', '/q', '/stats') -ExpectPattern 'bytes=38'
+    # /n is a per-session quota: four sessions of two echoes are eight echoes in total. A run that
+    # spends one global budget reports 2 instead, which is how Zig and Swift once differed here.
+    Invoke-Test -TestId 'QUOTA-003' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '2', '/c', '4', '/k', '1', '/q', '/stats') -ExpectPattern 'echoed=8'
+    Invoke-Test -TestId 'QUOTA-004' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/c', '2', '/k', '4', '/q', '/stats') -ExpectPattern 'echoed=10'
     Invoke-Test -TestId 'QUOTA-001' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=1'
     Invoke-Test -TestId 'QUOTA-002' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '2', '/z', '256', '/q', '/stats')
     Invoke-Test -TestId 'TIMEOUT-001' -Category 'TIMEOUT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/t', '1', '/w', '5', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
