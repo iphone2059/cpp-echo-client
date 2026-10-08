@@ -102,7 +102,7 @@ try {
     Start-Sleep -Milliseconds 500
     $heldTcpClient = Start-Process -FilePath $ClientPath -ArgumentList @('127.0.0.1', '/p', 'tcp', '/r',
         $heldTcpPort, '/n', '0', '/z', '4096', '/t', '30', '/w', '1', '/c', '1', '/threads', '1', '/q') `
-        -PassThru -WindowStyle Hidden
+        -PassThru -NoNewWindow
     try {
         $heldTcpClient.WaitForExit(5000) | Out-Null
         if (-not $heldTcpClient.HasExited -or $heldTcpClient.ExitCode -ne 0) {
@@ -254,7 +254,7 @@ try {
     if (-not $heldUdpReady.WaitOne(5000)) { throw 'held UDP peer did not become ready' }
     $heldUdpClient = Start-Process -FilePath $ClientPath -ArgumentList @('127.0.0.1', '/p', 'udp', '/r',
         $heldUdpPort, '/n', '0', '/z', '1200', '/t', '30', '/w', '1', '/c', '1', '/threads', '1', '/q') `
-        -PassThru -WindowStyle Hidden
+        -PassThru -NoNewWindow
     try {
         $heldUdpClient.WaitForExit(5000) | Out-Null
         if (-not $heldUdpClient.HasExited -or $heldUdpClient.ExitCode -ne 0) {

@@ -186,7 +186,7 @@ function Test-SessionQuota {
     try {
         $client = Start-Process -FilePath $ClientPath -ArgumentList @('127.0.0.1', '/p', 'tcp',
             '/r', $peer.Port, '/c', $Sessions, '/threads', $Workers, '/n', $Count,
-            '/k', $Depth, '/z', '1', '/cq', $Cq, '/q', '/stats') -PassThru -WindowStyle Hidden `
+            '/k', $Depth, '/z', '1', '/cq', $Cq, '/q', '/stats') -PassThru -NoNewWindow `
             -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath
         if (-not $client.WaitForExit(10000)) { throw 'quota client did not finish' }
         $output = Get-Content -LiteralPath $outputPath -Raw

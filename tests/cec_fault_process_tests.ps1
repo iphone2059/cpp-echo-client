@@ -20,7 +20,7 @@ function Invoke-FaultCase {
     )
 
     $errorPath = Join-Path $env:TEMP ("cec_fault_" + [Guid]::NewGuid().ToString('N') + '.err')
-    $process = Start-Process -FilePath $DriverPath -ArgumentList @($Mode) -PassThru -Wait -WindowStyle Hidden -RedirectStandardError $errorPath
+    $process = Start-Process -FilePath $DriverPath -ArgumentList @($Mode) -PassThru -Wait -NoNewWindow -RedirectStandardError $errorPath
     try {
         if ($process.ExitCode -ne $ExpectedExitCode) {
             throw "client fault mode '$Mode' exited with $($process.ExitCode), expected $ExpectedExitCode"

@@ -80,12 +80,12 @@ $server = $null
 $clientExit = $null
 $serverExit = $null
 try {
-    $server = Start-Process -FilePath $ServerPath -ArgumentList $serverArgs -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr -PassThru -WindowStyle Hidden
+    $server = Start-Process -FilePath $ServerPath -ArgumentList $serverArgs -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr -PassThru -NoNewWindow
     Start-Sleep -Milliseconds 700
     $clientArgs = @('127.0.0.1', '/p', $Protocol, '/r', [string]$port, '/n', '0', '/w', [string]$Seconds,
                     '/c', [string]$Sessions, '/threads', [string]$ClientWorkers, '/z', [string]$Payload, '/q', '/stats')
     if ($Protocol -eq 'tcp') { $clientArgs += @('/k', '8') }
-    $client = Start-Process -FilePath $ClientPath -ArgumentList $clientArgs -RedirectStandardOutput $clientOut -RedirectStandardError $clientErr -PassThru -WindowStyle Hidden
+    $client = Start-Process -FilePath $ClientPath -ArgumentList $clientArgs -RedirectStandardOutput $clientOut -RedirectStandardError $clientErr -PassThru -NoNewWindow
     if (-not $client.WaitForExit(($Seconds + 30) * 1000)) { $client.Kill($true); throw 'client did not stop' }
     $clientExit = $client.ExitCode
     if (-not $server.WaitForExit(25000)) { $server.Kill($true); throw 'server did not stop on its own' }
