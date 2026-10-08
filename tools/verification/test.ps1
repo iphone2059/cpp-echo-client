@@ -405,6 +405,22 @@ if ($Component -eq 'client') {
     Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/n', '1', '/d', 'x') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
     Invoke-Test -TestId 'HELP-002' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'HELP-003' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/rc', '1', '/l', '127.0.0.1:1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
+    # Every line below is a measured reference answer for that command line. The token, the exit code
+    # and the stream are the contract, so a paraphrase or a different precedence is a failure.
+    Invoke-Test -TestId 'CONFLICT-001' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'CONFLICT-002' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('/h', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PORT-001' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/c', '2') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PORT-002' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/rc', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr' -WithPeer $false
+    # The worker split is validated before the mandatory arguments, so a missing target does not win.
+    Invoke-Test -TestId 'WORKER-001' -Category 'WORKER' -Protocol 'tcp' -Arguments @('/c', '1', '/threads', '2', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'QUOTA-005' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/n', '18446744073709551615', '/c', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: quota-overflow' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-001' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/q=1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unexpected-value' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-002' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/r=') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-value' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-003' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/p', 'sctp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PAYLOAD-002' -Category 'PAYLOAD' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/z', '65508') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PAYLOAD-003' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '65536', '/z', '65536') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr' -WithPeer $false
+    # /h suppresses only missing-target and missing-protocol; the budgets still apply.
+    Invoke-Test -TestId 'CQ-002' -Category 'CQ' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr' -WithPeer $false
     Invoke-Test -TestId 'TCP-001' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=20'
     Invoke-Test -TestId 'TCP-002' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '100', '/k', '8', '/z', '1024', '/q', '/stats') -ExpectPattern 'echoed=100'
     Invoke-Test -TestId 'TCP-003' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '10', '/d', 'echo from toolkit', '/q', '/stats') -ExpectPattern 'echoed=10'
@@ -426,6 +442,20 @@ if ($Component -eq 'client') {
     Invoke-Test -TestId 'QUOTA-004' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/c', '2', '/k', '4', '/q', '/stats') -ExpectPattern 'echoed=10'
     Invoke-Test -TestId 'QUOTA-001' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=1'
     Invoke-Test -TestId 'QUOTA-002' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '2', '/z', '256', '/q', '/stats')
+    # One attempt is one receive plus one send whatever /k is, so the largest shard reserves two
+    # operations per session against the completion queue and two batches of registered memory.
+    Invoke-Test -TestId 'CQ-001' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MEM-001' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '2', '/z', '300000', '/memory', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr' -WithPeer $false
+    # The same budgets accepted: the run reaches the network and fails to connect, which is exit 3 and
+    # proves the configuration was not rejected.
+    Invoke-Test -TestId 'CQ-003' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '64', '/threads', '2', '/cq', '64', '/k', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    Invoke-Test -TestId 'CQ-004' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '1', '/k', '64', '/cq', '64', '/z', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    Invoke-Test -TestId 'MEM-002' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '2', '/z', '300000', '/memory', '2097152', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    # /k is the number of echoes one attempt carries, so a finite quota ends with a shorter attempt and
+    # the byte count stays exactly /n times the payload.
+    Invoke-Test -TestId 'BATCH-001' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/k', '4', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=5 .*bytes=1280'
+    Invoke-Test -TestId 'BATCH-002' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '17', '/k', '8', '/z', '512', '/q', '/stats') -ExpectPattern 'echoed=17 .*bytes=8704'
+    Invoke-Test -TestId 'BATCH-003' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '7', '/k', '3', '/c', '2', '/z', '128', '/q', '/stats') -ExpectPattern 'echoed=14 .*bytes=1792'
     Invoke-Test -TestId 'TIMEOUT-001' -Category 'TIMEOUT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/t', '1', '/w', '5', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
     Invoke-Test -TestId 'RECONNECT-001' -Category 'RECONNECT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/rc', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=5'
     Invoke-Test -TestId 'SHUTDOWN-001' -Category 'SHUTDOWN' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '3', '/z', '256', '/q', '/stats')
