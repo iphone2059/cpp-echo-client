@@ -90,20 +90,14 @@ foreach ($file in @(Get-ChildItem -LiteralPath $cecSourceDirectories -File -Recu
     }
 }
 
-# 5. One project builds the implementation. Its product configuration must not carry the test
-#    sources, its test configuration must not carry the product entry point, and every source is
-#    listed.
+# 5. One project builds the implementation: product, test and pure-engine configurations of a
+#    single .vcxproj. The pure configuration must stay native free and every source must be
+#    listed by the project.
 $cecProjects = @(Get-ChildItem -LiteralPath $cecRoot -File -Filter *.vcxproj)
 if ($cecProjects.Count -ne 1) {
     Add-CecFailure ("expected exactly one Visual Studio project, found {0}" -f $cecProjects.Count)
 }
 $cecProjectText = ($cecProjects | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join [Environment]::NewLine
-foreach ($file in $cecSources | Where-Object { $_.Extension -eq '.cpp' }) {
-    $relative = [System.IO.Path]::GetRelativePath($cecRoot, $file.FullName)
-    if ($cecProjectText -notmatch [regex]::Escape($relative)) {
-        Add-CecFailure ("source is not listed in the project: {0}" -f $relative)
-    }
-}
 $quote = [char]39
 function Get-CecConfigurationMarker {
     param([string] $Configuration, [string] $Kind)
@@ -112,7 +106,8 @@ function Get-CecConfigurationMarker {
     }
     return '<ProjectConfiguration Include="' + $Configuration + '|x64">'
 }
-foreach ($configuration in @('Debug', 'Release', 'DebugTests', 'ReleaseTests')) {
+$cecConfigurations = @('Debug', 'Release', 'DebugTests', 'ReleaseTests', 'DebugPure', 'ReleasePure')
+foreach ($configuration in $cecConfigurations) {
     foreach ($kind in @('project', 'group')) {
         $marker = Get-CecConfigurationMarker -Configuration $configuration -Kind $kind
         if ($cecProjectText.IndexOf($marker) -lt 0) {
@@ -131,6 +126,7 @@ function Get-CecGroupSources {
 }
 $productSources = Get-CecGroupSources -Text $cecProjectText -Configuration 'Release'
 $testSources = Get-CecGroupSources -Text $cecProjectText -Configuration 'ReleaseTests'
+$pureSources = Get-CecGroupSources -Text $cecProjectText -Configuration 'ReleasePure'
 if (@($productSources | Where-Object { $_ -like 'tests\*' }).Count -ne 0) {
     Add-CecFailure 'the product configuration lists test sources'
 }
@@ -142,6 +138,30 @@ if (@($testSources | Where-Object { $_ -eq 'src\main.cpp' }).Count -ne 0) {
 }
 if ($testSources -notcontains 'tests\cec_test_entry.cpp') {
     Add-CecFailure 'the test configuration does not list tests\cec_test_entry.cpp'
+}
+if ($pureSources -notcontains 'tests\cec_test_entry.cpp' -or $pureSources -notcontains 'tests\cec_pure_engine_tests.cpp') {
+    Add-CecFailure 'the pure-engine configuration does not list its entry and suite'
+}
+if (@($pureSources | Where-Object { $_ -like '*native*' -or $_ -eq 'src\engine.cpp' -or $_ -eq 'src\contract.cpp' -or $_ -eq 'src\payload.cpp' }).Count -ne 0) {
+    Add-CecFailure 'the pure-engine configuration lists a native or higher-layer source'
+}
+if ($cecProjectText -notmatch 'CEC_PURE_ENGINE_ONLY') {
+    Add-CecFailure 'no configuration defines CEC_PURE_ENGINE_ONLY'
+}
+$pureMarker = Get-CecConfigurationMarker -Configuration 'ReleasePure' -Kind 'group'
+$pureStart = $cecProjectText.IndexOf($pureMarker)
+if ($pureStart -ge 0) {
+    $pureEnd = $cecProjectText.IndexOf('</ItemDefinitionGroup>', $pureStart)
+    if ($pureEnd -gt $pureStart) {
+        $segment = $cecProjectText.Substring($pureStart, $pureEnd - $pureStart)
+        if ($segment -match 'ws2_32') { Add-CecFailure 'the pure-engine configuration links ws2_32' }
+    }
+}
+foreach ($file in $cecSources | Where-Object { $_.Extension -eq '.cpp' }) {
+    $relative = [System.IO.Path]::GetRelativePath($cecRoot, $file.FullName)
+    if ($cecProjectText -notmatch [regex]::Escape($relative)) {
+        Add-CecFailure ("source is not listed in the project: {0}" -f $relative)
+    }
 }
 # 6. The former language constraints still hold.
 Test-CecPattern -Pattern '\b(namespace|using|throw|try|catch|goto|dynamic_cast|typeid)\b|std::(function|bind|shared_ptr|async)|\.detach\s*\(' -Label 'forbidden C++ construct' -Files $cecSources

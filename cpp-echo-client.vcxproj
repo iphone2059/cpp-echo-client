@@ -17,6 +17,14 @@
       <Configuration>ReleaseTests</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="DebugPure|x64">
+      <Configuration>DebugPure</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleasePure|x64">
+      <Configuration>ReleasePure</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>
@@ -52,6 +60,18 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='DebugPure|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleasePure|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -222,7 +242,7 @@
       <CompileAs>CompileAsCppModule</CompileAs>
     </ClCompile>
     <ClCompile Include="tests\cec_test_entry.cpp" />
-    <ClCompile Include="tests\cec_core_tests.cpp" />
+    <ClCompile Include="tests\cec_pure_engine_tests.cpp" />
     <ClCompile Include="tests\cec_runtime_tests.cpp" />
     <ClCompile Include="tests\cec_engine_tests.cpp" />
     <ClCompile Include="tests\cec_tests.cpp" />
@@ -254,11 +274,99 @@
       <CompileAs>CompileAsCppModule</CompileAs>
     </ClCompile>
     <ClCompile Include="tests\cec_test_entry.cpp" />
-    <ClCompile Include="tests\cec_core_tests.cpp" />
+    <ClCompile Include="tests\cec_pure_engine_tests.cpp" />
     <ClCompile Include="tests\cec_runtime_tests.cpp" />
     <ClCompile Include="tests\cec_engine_tests.cpp" />
     <ClCompile Include="tests\cec_tests.cpp" />
     <ClCompile Include="tests\cec_fault_driver.cpp" />
+    <ClCompile Include="tests\cec_test_support.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='DebugPure|x64'">
+    <OutDir>$(Platform)\DebugPure\</OutDir>
+    <IntDir>$(Platform)\DebugPure\$(ProjectName)\</IntDir>
+    <TargetName>cpp-echo-client-pure-tests</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='DebugPure|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>false</ExceptionHandling>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <ScanSourceForModuleDependencies>true</ScanSourceForModuleDependencies>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /EHs-c- /GR- %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>_DEBUG;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_HAS_EXCEPTIONS=0;_WIN32_WINNT=0x0A00;WIN32;_CONSOLE;CEC_PURE_ENGINE_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='DebugPure|x64'">
+    <ClCompile Include="src\types.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\metrics.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\internal.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="tests\cec_test_entry.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="tests\cec_pure_engine_tests.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="tests\cec_test_support.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='ReleasePure|x64'">
+    <OutDir>$(Platform)\ReleasePure\</OutDir>
+    <IntDir>$(Platform)\ReleasePure\$(ProjectName)\</IntDir>
+    <TargetName>cpp-echo-client-pure-tests</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='ReleasePure|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <ExceptionHandling>false</ExceptionHandling>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <ScanSourceForModuleDependencies>true</ScanSourceForModuleDependencies>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /EHs-c- /GR- %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>NDEBUG;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_HAS_EXCEPTIONS=0;_WIN32_WINNT=0x0A00;WIN32;_CONSOLE;CEC_PURE_ENGINE_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='ReleasePure|x64'">
+    <ClCompile Include="src\types.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\metrics.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\internal.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="tests\cec_test_entry.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
+    <ClCompile Include="tests\cec_pure_engine_tests.cpp">
+      <CompileAs>CompileAsCppModule</CompileAs>
+    </ClCompile>
     <ClCompile Include="tests\cec_test_support.cpp">
       <CompileAs>CompileAsCppModule</CompileAs>
     </ClCompile>

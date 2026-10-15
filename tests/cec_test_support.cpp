@@ -15,7 +15,11 @@ module;
 
 export module cec.test.support;
 
+#ifndef CEC_PURE_ENGINE_ONLY
+// The pure-engine configuration compiles this module without the transport/runtime module, so
+// the engine re-export is guarded exactly like the server guard around its native imports.
 export import cec.engine;
+#endif
 export import cec.internal;
 export import cec.types;
 

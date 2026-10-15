@@ -1,4 +1,7 @@
-param([Parameter(Mandatory)][string]$ClientPath)
+param(
+    [Parameter(Mandatory)][string] $ClientPath,
+    [string] $Label = 'echo client'
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 function Invoke-CECProcess {
@@ -118,6 +121,6 @@ foreach ($budget in @(0, 32)) {
             throw "reset recovery did not echo and drain all generations: $final"
         }
         if ($result.ErrorText.Trim().Length -ne 0) { throw "reset recovery stderr: $($result.ErrorText)" }
-        Write-Host "PASS reset budget=$budget, echoed after resets and drained: $final"
+        Write-Host "PASS $Label reset budget=$budget, echoed after resets and drained: $final"
     } finally { $listener.Dispose() }
 }
