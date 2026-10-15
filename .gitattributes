@@ -1,0 +1,7 @@
+*.cpp text eol=lf
+*.ps1 text eol=lf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
+*.slnx text eol=crlf
+*.md text eol=lf
+.clang-format text eol=lf
