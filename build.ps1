@@ -72,22 +72,24 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Formatting check failed for $($file.FullName); run format.ps1 explicitly." }
     }
 
-    Write-Host "== MSBuild $Configuration|x64"
-    & $msbuild (Join-Path $projectRoot 'cpp-echo-client.slnx') /p:Configuration=$Configuration /p:Platform=x64 /v:minimal /nologo /m /nodeReuse:false
-    if ($LASTEXITCODE -ne 0) { throw 'MSBuild failed.' }
+    Write-Host "== MSBuild $Configuration and test configurations"
+    foreach ($buildConfiguration in @($Configuration, ($Configuration + 'Tests'))) {
+        & $msbuild (Join-Path $projectRoot 'cpp-echo-client.vcxproj') /p:Configuration=$buildConfiguration /p:Platform=x64 /v:minimal /nologo /m /nodeReuse:false
+        if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for $buildConfiguration." }
+    }
 
     $output = Join-Path $projectRoot ("x64\" + $Configuration)
     $client = Join-Path $output 'cpp-echo-client.exe'
-    foreach ($executable in 'cpp-echo-client-core-tests', 'cpp-echo-client-runtime-tests', 'cpp-echo-client-tests',
-        'cpp-echo-client-engine-tests') {
-        $path = Join-Path $output ($executable + '.exe')
-        Invoke-Step -Label "unit suite $executable" -Body { & $path | Out-Null }
+    $tests = Join-Path (Join-Path $projectRoot ("x64\" + $Configuration + 'Tests')) 'cpp-echo-client-tests.exe'
+    foreach ($suite in 'core', 'runtime', 'engine', 'contracts') {
+        Invoke-Step -Label "unit suite $suite" -Body { & $tests $suite | Out-Null }
+    }
     }
     Invoke-Step -Label 'source policy' -Body {
         & pwsh -NoProfile -File (Join-Path $projectRoot 'tests/cec_source_policy.ps1') -ProjectRoot $projectRoot
     }
     Invoke-Step -Label 'fail-fast boundaries' -Body {
-        & pwsh -NoProfile -File (Join-Path $projectRoot 'tests/cec_fault_process_tests.ps1') -DriverPath (Join-Path $output 'cpp-echo-client-fault-driver.exe')
+        & pwsh -NoProfile -File (Join-Path $projectRoot 'tests/cec_fault_process_tests.ps1') -DriverPath $tests
     }
     Invoke-Step -Label 'process contract' -Body {
         & pwsh -NoProfile -File (Join-Path $projectRoot 'tests/cec_process_tests.ps1') -ClientPath $client

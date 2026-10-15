@@ -538,7 +538,7 @@ static void cec_test_result_classification() noexcept {
                     "client controlled stop does not hide corruption");
 }
 
-int main() {
+int cec_tests_main() {
     cec_test_parser();
     cec_test_quota_and_cq_options();
     cec_test_capacity();

@@ -2,12 +2,5 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="cpp-echo-client-core.vcxproj" />
-  <Project Path="cpp-echo-client-test-support.vcxproj" />
-  <Project Path="cpp-echo-client-core-tests.vcxproj" />
-  <Project Path="cpp-echo-client-runtime-tests.vcxproj" />
-  <Project Path="cpp-echo-client-engine-tests.vcxproj" />
-  <Project Path="cpp-echo-client-tests.vcxproj" />
-  <Project Path="cpp-echo-client-fault-driver.vcxproj" />
   <Project Path="cpp-echo-client.vcxproj" />
 </Solution>

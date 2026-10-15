@@ -6,9 +6,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# The project is a C++20 named-module project: src holds one .cpp per module and tests hold the
-# module consumers. There is no header source at all, so the policy checks the module graph and
-# the build index instead of include lines.
+# The implementation is one Visual Studio 2026 project built from C++20 named modules; there is no
+# header source and no CMake. The policy checks the module graph, the single-project build index and
+# the language constraints.
 $cecRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $cecSourceDirectories = @('src', 'tests') | ForEach-Object { Join-Path $cecRoot $_ }
 $cecSources = @(Get-ChildItem -LiteralPath $cecSourceDirectories -File -Recurse | Where-Object {
@@ -24,24 +24,23 @@ function Add-CecFailure {
 function Test-CecPattern {
     param([string] $Pattern, [string] $Label, [System.IO.FileInfo[]] $Files)
     foreach ($file in $Files) {
-        $matches = @(Select-String -LiteralPath $file.FullName -Pattern $Pattern -AllMatches)
-        foreach ($match in $matches) {
+        foreach ($match in @(Select-String -LiteralPath $file.FullName -Pattern $Pattern -AllMatches)) {
             Add-CecFailure ("{0}: {1}:{2}" -f $Label, $file.FullName, $match.LineNumber)
         }
     }
 }
 
-# 1. No header source may exist in the project tree; the conversion removed every one of them.
+# 1. No header source may exist in the project tree.
 $cecHeaders = @(Get-ChildItem -LiteralPath $cecRoot -File -Recurse -Force | Where-Object {
         $_.Extension -in @('.h', '.hpp', '.hxx') -and
-        $_.FullName -notmatch '[\/](x64|.vs|build|.build)[\/]'
+        $_.FullName -notmatch '[\\/](x64|\.vs|build|\.build)[\\/]'
     })
 foreach ($header in $cecHeaders) {
     Add-CecFailure ("header source present: {0}" -f $header.FullName)
 }
 
-# 2. Every production module is one .cpp that declares its module and exports the surface the
-#    other modules and the tests consume.
+# 2. Every production module is one .cpp that declares its module and opens the global module
+#    fragment before its includes.
 $cecModules = [ordered]@{
     'types'    = 'cec.types'
     'metrics'  = 'cec.metrics'
@@ -66,56 +65,93 @@ foreach ($entry in $cecModules.GetEnumerator()) {
     }
 }
 
-# 3. The pure modules keep no native or higher-layer dependency, exactly as the layered
-#    headers did before the conversion.
-$cecPureModules = @('types', 'metrics', 'internal')
-foreach ($name in $cecPureModules) {
+# 3. The pure modules keep no native or higher-layer dependency.
+foreach ($name in @('types', 'metrics', 'internal')) {
     $path = Join-Path $cecRoot ("src\{0}.cpp" -f $name)
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-    Test-CecPattern -Pattern '(?m)^(export )?import cec\.(native|engine|payload|contract);' -Label 'higher layer import in pure module' -Files @(Get-Item -LiteralPath $path)
-    Test-CecPattern -Pattern '#\s*include\s*[<"](Windows|WinSock2|MSWSock|WS2tcpip|mmsystem)(\.h)?[>"]|\b(?:SOCKET|HANDLE|OVERLAPPED|RIO_(?:RQ|CQ|BUF))\b' -Label 'native dependency in pure module' -Files @(Get-Item -LiteralPath $path)
+    $file = @(Get-Item -LiteralPath $path)
+    Test-CecPattern -Pattern '(?m)^(export )?import cec\.(native|engine|payload|contract);' -Label 'higher layer import in pure module' -Files $file
+    Test-CecPattern -Pattern '#\s*include\s*[<"](Windows|WinSock2|MSWSock|WS2tcpip|mmsystem)(\.h)?[>"]|\b(?:SOCKET|HANDLE|OVERLAPPED|RIO_(?:RQ|CQ|BUF))\b' -Label 'native dependency in pure module' -Files $file
 }
 
-# 4. Only a module interface unit may export, and only the modules listed above may exist.
+# 4. Only the declared production modules plus test support modules may exist.
 $cecExporters = @($cecModules.Values)
 foreach ($file in @(Get-ChildItem -LiteralPath $cecSourceDirectories -File -Recurse -Filter *.cpp)) {
     $text = Get-Content -LiteralPath $file.FullName -Raw
     foreach ($match in [regex]::Matches($text, '(?m)^export module ([A-Za-z0-9_.]+);')) {
         $declared = $match.Groups[1].Value
         if ($cecExporters -notcontains $declared -and $declared -notlike 'cec.test.*') {
-            Add-CecFailure ("unknown module declaration '{0}' in {1}" -f $match.Groups[1].Value, $file.FullName)
+            Add-CecFailure ("unknown module declaration '{0}' in {1}" -f $declared, $file.FullName)
         }
     }
-    if ($file.DirectoryName -eq (Join-Path $cecRoot 'tests') -and $text -match '(?m)^export module cec\.(types|metrics|payload|contract|native|internal|engine);') {
+    if ($file.DirectoryName -eq (Join-Path $cecRoot 'tests') -and
+        $text -match '(?m)^export module cec\.(types|metrics|payload|contract|native|internal|engine);') {
         Add-CecFailure ("test translation unit re-declares a production module: {0}" -f $file.FullName)
     }
 }
 
-# 5. Every module source and every test translation unit is listed in a Visual Studio project, so
-#    the solution is the complete build index.
+# 5. One project builds the implementation. Its product configuration must not carry the test
+#    sources, its test configuration must not carry the product entry point, and every source is
+#    listed.
 $cecProjects = @(Get-ChildItem -LiteralPath $cecRoot -File -Filter *.vcxproj)
-if ($cecProjects.Count -eq 0) {
-    Add-CecFailure 'no Visual Studio project file in the project root'
+if ($cecProjects.Count -ne 1) {
+    Add-CecFailure ("expected exactly one Visual Studio project, found {0}" -f $cecProjects.Count)
 }
-$cecProjectText = ($cecProjects | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
+$cecProjectText = ($cecProjects | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join [Environment]::NewLine
 foreach ($file in $cecSources | Where-Object { $_.Extension -eq '.cpp' }) {
     $relative = [System.IO.Path]::GetRelativePath($cecRoot, $file.FullName)
     if ($cecProjectText -notmatch [regex]::Escape($relative)) {
-        Add-CecFailure ("source is not listed in any project: {0}" -f $relative)
+        Add-CecFailure ("source is not listed in the project: {0}" -f $relative)
     }
 }
-foreach ($badge in 'Debug|x64', 'Release|x64') {
-    if ($cecProjectText -notmatch [regex]::Escape($badge)) {
-        Add-CecFailure ("project files must declare the {0} configuration" -f $badge)
+$quote = [char]39
+function Get-CecConfigurationMarker {
+    param([string] $Configuration, [string] $Kind)
+    if ($Kind -eq 'group') {
+        return '<ItemGroup Condition="' + $quote + '$(Configuration)|$(Platform)' + $quote + '==' + $quote + $Configuration + '|x64' + $quote + '">'
+    }
+    return '<ProjectConfiguration Include="' + $Configuration + '|x64">'
+}
+foreach ($configuration in @('Debug', 'Release', 'DebugTests', 'ReleaseTests')) {
+    foreach ($kind in @('project', 'group')) {
+        $marker = Get-CecConfigurationMarker -Configuration $configuration -Kind $kind
+        if ($cecProjectText.IndexOf($marker) -lt 0) {
+            Add-CecFailure ("project does not declare the {0} entry for {1}|x64" -f $kind, $configuration)
+        }
     }
 }
-
+function Get-CecGroupSources {
+    param([string] $Text, [string] $Configuration)
+    $marker = Get-CecConfigurationMarker -Configuration $Configuration -Kind 'group'
+    $start = $Text.IndexOf($marker)
+    if ($start -lt 0) { return @() }
+    $end = $Text.IndexOf('</ItemGroup>', $start)
+    $group = $Text.Substring($start, $end - $start)
+    return @([regex]::Matches($group, 'Include="([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+}
+$productSources = Get-CecGroupSources -Text $cecProjectText -Configuration 'Release'
+$testSources = Get-CecGroupSources -Text $cecProjectText -Configuration 'ReleaseTests'
+if (@($productSources | Where-Object { $_ -like 'tests\*' }).Count -ne 0) {
+    Add-CecFailure 'the product configuration lists test sources'
+}
+if ($productSources -notcontains 'src\main.cpp') {
+    Add-CecFailure 'the product configuration does not list src\main.cpp'
+}
+if (@($testSources | Where-Object { $_ -eq 'src\main.cpp' }).Count -ne 0) {
+    Add-CecFailure 'the test configuration lists the product entry point src\main.cpp'
+}
+if ($testSources -notcontains 'tests\cec_test_entry.cpp') {
+    Add-CecFailure 'the test configuration does not list tests\cec_test_entry.cpp'
+}
 # 6. The former language constraints still hold.
 Test-CecPattern -Pattern '\b(namespace|using|throw|try|catch|goto|dynamic_cast|typeid)\b|std::(function|bind|shared_ptr|async)|\.detach\s*\(' -Label 'forbidden C++ construct' -Files $cecSources
 Test-CecPattern -Pattern '^\s*#\s*define\b' -Label 'project macro in implementation file' -Files @($cecSources | Where-Object Extension -In @('.c', '.cc', '.cpp', '.cxx'))
 Test-CecPattern -Pattern '\b(sendto|recvfrom|WSASend|WSARecv|WSASendTo|WSARecvFrom)\s*\(' -Label 'non-RIO payload API' -Files $cecSources
-# The transport API is named send/recv in every language of this workspace, so a bare verb is only
-# a raw payload call when the line is neither a qualified member access nor a member declaration.
+Test-CecPattern -Pattern '\b(CreateFile|CreateEvent|CreateMutex|CreateSemaphore|LoadLibrary|GetModuleHandle|MessageBox)\s*\(' -Label 'non-Unicode Windows API' -Files $cecSources
+Test-CecPattern -Pattern '^\s*#\s*include\s*[<"][^>"]+\.cpp[>"]' -Label 'implementation file inclusion' -Files $cecSources
+
+# The transport API is named send/recv, so a bare verb is only a raw payload call when the line is
+# neither a qualified member access nor a member declaration. Only production sources are checked.
 function Test-CecPayloadVerb {
     param([System.IO.FileInfo[]] $Files)
     foreach ($file in $Files) {
@@ -128,19 +164,12 @@ function Test-CecPayloadVerb {
         }
     }
 }
-# Only production sources are held to the bare verb rule: a test recorder legitimately has a
-# member named send/recv and calls it unqualified from inside its own class.
 Test-CecPayloadVerb -Files @($cecSources | Where-Object {
         $_.Extension -in @('.c', '.cc', '.cpp', '.cxx') -and $_.DirectoryName -eq (Join-Path $cecRoot 'src')
     })
-Test-CecPattern -Pattern '\b(CreateFile|CreateEvent|CreateMutex|CreateSemaphore|LoadLibrary|GetModuleHandle|MessageBox)\s*\(' -Label 'non-Unicode Windows API' -Files $cecSources
-Test-CecPattern -Pattern '^\s*#\s*include\s*[<"][^>"]+\.cpp[>"]' -Label 'implementation file inclusion' -Files $cecSources
 
-# 7. The project stays a Visual Studio project without a CMake build and with no dependency on
-#    another implementation of the same contract.
+# 7. No CMake build, no reference to another implementation, nothing outside the project root.
 Test-CecPattern -Pattern 'CMakeLists\.txt|add_subdirectory\s*\(|cmake_minimum_required' -Label 'CMake build artefact' -Files @($cecProjects + @(Get-Item -LiteralPath (Join-Path $cecRoot 'README.md') -ErrorAction SilentlyContinue))
-# This project is standalone: neither its build declarations nor its scripts may name another
-# implementation, and nothing may reach outside the project root.
 function Test-CecForeignReference {
     param([System.IO.FileInfo[]] $Files)
     $ownName = Split-Path -Path $cecRoot -Leaf
@@ -161,10 +190,11 @@ $cecDependencyFiles = @($cecProjects + @(Get-ChildItem -LiteralPath $cecRoot -Fi
             $_.Extension -eq '.ps1'
         }))
 Test-CecForeignReference -Files $cecDependencyFiles
-Test-CecPattern -Pattern '\.\.[\\/]|add_subdirectory\s*\(|cmake\s+-S|cmake_minimum_required' -Label 'cross-project dependency' -Files $cecDependencyFiles
+Test-CecPattern -Pattern '\.\.[\\/]|add_subdirectory\s*\(|cmake\s+-S' -Label 'cross-project dependency' -Files $cecDependencyFiles
+
 if ($cecFailures.Count -ne 0) {
     $cecFailures | ForEach-Object { Write-Error $_ }
     throw "client source policy failed with $($cecFailures.Count) violation(s)"
 }
 
-Write-Host 'PASS client named-module source policy: no header source, layered modules, Visual Studio build index'
+Write-Host 'PASS client named-module source policy: single project, no header source, layered modules'

@@ -531,7 +531,7 @@ static void cec_engine_test_native_generation() noexcept {
     cec_native_require_release(&native);
 }
 
-int main() {
+int cec_engine_tests_main() {
     cec_engine_test_lifecycle();
     cec_engine_test_accounting_model();
     cec_engine_test_owner();

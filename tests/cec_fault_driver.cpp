@@ -24,7 +24,7 @@ static int WINAPI cec_fault_rio_notify(RIO_CQ) noexcept {
     return cec_fault_notify_status;
 }
 
-int wmain(int argc, wchar_t** argv) {
+int cec_fault_driver_main(int argc, wchar_t** argv) {
     if (argc != 2) {
         return 1;
     }

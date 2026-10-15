@@ -140,7 +140,7 @@ static void cec_runtime_test_new_posts_keep_decision_time() noexcept {
                        "runtime following decision uses current clock and expires uncompleted new attempt");
 }
 
-int main() {
+int cec_runtime_tests_main() {
     cec_runtime_test_partial_send();
     cec_runtime_test_nested_failure_and_cancel();
     cec_runtime_test_stop_during_direct_drain();

@@ -135,7 +135,7 @@ static void cec_core_test_reconnect_timer() noexcept {
                     "pure closing timer requests transport drain check");
 }
 
-int main() {
+int cec_core_tests_main() {
     cec_core_test_finite_pipeline();
     cec_core_test_protocol_and_stop();
     cec_core_test_reconnect_timer();

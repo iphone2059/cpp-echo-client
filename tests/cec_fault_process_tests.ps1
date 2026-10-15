@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path -LiteralPath $DriverPath -PathType Leaf)) {
-    throw "client fault driver not found: $DriverPath"
+    throw "client test executable not found: $DriverPath"
 }
 
 function Invoke-FaultCase {
@@ -23,7 +23,7 @@ function Invoke-FaultCase {
     [void](New-Item -ItemType Directory -Path $artifact -Force)
     $errorPath = Join-Path $artifact ($Mode + '.stderr.log')
     $outputPath = Join-Path $artifact ($Mode + '.stdout.log')
-    $process = Start-Process -FilePath $DriverPath -ArgumentList @($Mode) -PassThru -WindowStyle Hidden -RedirectStandardError $errorPath -RedirectStandardOutput $outputPath
+    $process = Start-Process -FilePath $DriverPath -ArgumentList @('fault', $Mode) -PassThru -WindowStyle Hidden -RedirectStandardError $errorPath -RedirectStandardOutput $outputPath
     try {
         if (-not $process.WaitForExit(15000)) {
             $process.Kill($true)
