@@ -4,6 +4,7 @@ param(
     [int] $PerfSeconds = 5,
     [int] $PortBase = 26000,
     [string] $ExecutablePath = '',
+    [string] $PeerPath = '',
     [ValidateSet('Release', 'Debug')] [string] $Configuration = 'Release',
     [string] $ArtifactDirectory = '',
     [switch] $GateSelfTest
@@ -22,6 +23,7 @@ if ($Project -notmatch $ProjectPattern) {
 }
 $Implementation = $Matches[1]
 $Component      = $Matches[2]
+$PeerKind       = if ($Component -eq 'client') { 'server' } else { 'client' }
 $ResultsDir = if ($ArtifactDirectory) { [System.IO.Path]::GetFullPath($ArtifactDirectory) } else { Join-Path $PSScriptRoot 'results' }
 $ArchiveDir = Join-Path $ResultsDir 'archive'
 New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
@@ -29,18 +31,34 @@ $CaseDir = Join-Path $ResultsDir 'cases'
 New-Item -ItemType Directory -Force -Path $CaseDir | Out-Null
 
 $ExecutableFile = Join-Path $PSScriptRoot 'executable.txt'
+$PeerFile       = Join-Path $PSScriptRoot ("peer-" + $PeerKind + ".txt")
 $FeaturesFile   = Join-Path $PSScriptRoot 'features.txt'
 
 if (-not $ExecutablePath -and -not (Test-Path -LiteralPath $ExecutableFile -PathType Leaf)) { throw "executable.txt is missing: $ExecutableFile" }
+# The peer is optional. An implementation that ships no peer declaration still runs every
+# standalone case; each peer-dependent case is reported as SKIP instead of aborting the run.
+$PeerAvailable = [bool]$PeerPath -or (Test-Path -LiteralPath $PeerFile -PathType Leaf)
+if (-not $PeerAvailable) { Write-Host "no $PeerKind declared: peer-dependent cases are reported as SKIP" }
 $Executable = if ($ExecutablePath) { [System.IO.Path]::GetFullPath($ExecutablePath) } else { [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ((Get-Content -LiteralPath $ExecutableFile -Raw).Trim()))) }
+$Peer = if ($PeerPath) {
+    [System.IO.Path]::GetFullPath($PeerPath)
+} elseif ($PeerAvailable) {
+    [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ((Get-Content -LiteralPath $PeerFile -Raw).Trim())))
+} else {
+    ''
+}
 $Features   = @()
 if (Test-Path -LiteralPath $FeaturesFile -PathType Leaf) {
     $Features = @(Get-Content -LiteralPath $FeaturesFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 }
 $HasFeature = { param([string] $Name) return $Features -contains $Name }
 
-if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
-    throw "executable not found: $Executable - edit the text file next to this script"
+$requiredPaths = @(, @('executable', $Executable))
+if ($PeerAvailable) { $requiredPaths += , @($PeerKind, $Peer) }
+foreach ($pair in $requiredPaths) {
+    if (-not (Test-Path -LiteralPath $pair[1] -PathType Leaf)) {
+        throw "$($pair[0]) not found: $($pair[1]) - edit the text file next to this script"
+    }
 }
 
 $GitHead  = (git -C $Root rev-parse HEAD 2>$null)
@@ -54,12 +72,12 @@ if ($ContractVersion -ne 'echo-binary-contract-v1') {
     throw "contract-version.txt does not declare echo-binary-contract-v1"
 }
 
-$Columns = @('timestamp','project','implementation','component','git_head','git_dirty','executable','build_type',
+$Columns = @('timestamp','project','implementation','component','git_head','git_dirty','executable','peer_executable','build_type',
     'test_id','category','protocol','result','exit_code','expected_exit_code','duration_ms','sessions','workers',
     'payload_bytes','pipeline_depth','echoed','attempted','pending','corrupted','lost','cancelled','connections',
     'reconnects','network_errors','echo_per_sec','mib_per_sec','p50_us','p99_us','p999_us','notify_arms',
-    'notify_deliveries','notify_gap','notify_timeouts','stdout_valid','stderr_empty',
-    'artifact_directory','message')
+    'notify_deliveries','notify_gap','notify_timeouts','stdout_valid','stderr_empty','peer_exit_code',
+    'peer_stdout_valid','peer_stderr_empty','artifact_directory','message')
 $Rows = [System.Collections.Generic.List[object]]::new()
 $Script:Port = $PortBase
 
@@ -104,6 +122,7 @@ function Add-Row {
     $row['git_head']         = $GitHead
     $row['git_dirty']        = $GitDirty
     $row['executable']       = $Executable
+    $row['peer_executable']  = $Peer
     $row['build_type']       = $Configuration.ToLowerInvariant()
     foreach ($key in $Values.Keys) { if ($row.Contains($key)) { $row[$key] = $Values[$key] } }
     $Rows.Add([pscustomobject]$row)
@@ -288,6 +307,34 @@ function Read-TextFile {
     return [string]$content
 }
 
+function Wait-ForServer {
+    param([int] $Port, [string] $ForProtocol, [int] $TimeoutMs = 15000,
+        [System.Diagnostics.Process] $ServerProcess = $null)
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($clock.ElapsedMilliseconds -lt $TimeoutMs) {
+        if ($ServerProcess -and $ServerProcess.HasExited) { return $false }
+        if ($ForProtocol -ne 'tcp') {
+            Start-Sleep -Milliseconds ([Math]::Min(600, $TimeoutMs))
+            return -not ($ServerProcess -and $ServerProcess.HasExited)
+        }
+        $client = $null
+        try {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            $remaining = [int]($TimeoutMs - $clock.ElapsedMilliseconds)
+            if ($remaining -le 0) { return $false }
+            $connect = $client.ConnectAsync('127.0.0.1', $Port)
+            if ($connect.Wait([Math]::Min(200, $remaining)) -and $client.Connected) { return $true }
+        } catch {
+            # A refused or cancelled probe is not readiness; the next probe shares this deadline.
+        } finally {
+            if ($client) { $client.Dispose() }
+        }
+        $remaining = [int]($TimeoutMs - $clock.ElapsedMilliseconds)
+        if ($remaining -gt 0) { Start-Sleep -Milliseconds ([Math]::Min(200, $remaining)) }
+    }
+    return $false
+}
+
 function Invoke-Test {
     param(
         [string] $TestId,
@@ -298,9 +345,15 @@ function Invoke-Test {
         [string] $ExpectPattern = '',
         [string] $ExpectStream = 'any',
         [int[]] $AllowExitCodes = @(),
-        [int] $TimeoutMs = 40000
+        [int] $TimeoutMs = 40000,
+        [bool] $WithPeer = $true
     )
     if (-not (Test-CaseSelected -TestId $TestId)) { return }
+    if ($WithPeer -and -not $PeerAvailable) {
+        Add-Row -Values @{ test_id = $TestId; category = $Category; protocol = $Protocol; result = 'SKIP'
+            message = "skipped: no $PeerKind executable declared" }
+        return
+    }
     $port = Get-FreePort
     $tag = [Guid]::NewGuid().ToString('N')
     $casePath = Join-Path $CaseDir ($TestId + '-' + $tag)
@@ -308,19 +361,46 @@ function Invoke-Test {
     $outFile = Join-Path $casePath 'stdout.txt'
     $errFile = Join-Path $casePath 'stderr.txt'
     $diagFile = Join-Path $casePath 'diagnostics.txt'
+    $peerOut = Join-Path $casePath 'peer-stdout.txt'
+    $peerErr = Join-Path $casePath 'peer-stderr.txt'
+    $peerDiag = Join-Path $casePath 'peer-diagnostics.txt'
     $arguments = @($Arguments | ForEach-Object { $_ -replace '@PORT@', [string]$port })
     $runtime = $arguments -contains '/stats'
     if ($runtime -and $arguments -notcontains '/w') { $arguments += @('/w', '20') }
     $started = Get-Date
+    $peerProcess = $null
     $process = $null
     $finished = $false
     $exit = -1
     $stdout = ''
     $stderr = ''
+    $peerDone = -not $WithPeer
+    $peerExit = -1
+    $peerText = ''
+    $peerError = ''
+    $peerMetrics = @{}
+    $peerArgs = @()
     $metrics = @{}
     $notify = @{ arms = ''; deliveries = ''; gap = ''; timeouts = '' }
     $failure = ''
     try {
+        if ($WithPeer) {
+            $peerArgs = @('127.0.0.1', '/p', $Protocol, '/r', [string]$port, '/n', '20', '/z', '256', '/q', '/stats')
+            if ($Component -eq 'client') {
+                $mainRun = 0
+                for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/w') { $mainRun = [int]$arguments[$i + 1] } }
+                $peerSeconds = if ($arguments -contains '/n' -and $mainRun -eq 20) { 5 } else { [Math]::Max(5, $mainRun + 5) }
+                $peerArgs = @('/p', $Protocol, '/s', [string]$port, '/w', [string]$peerSeconds, '/q', '/stats')
+            }
+            if (Test-Feature 'notify-diagnostics') {
+                if ($PeerKind -eq 'client') { $env:CEC_DIAG_FILE = $peerDiag } else { $env:CES_DIAG_FILE = $peerDiag }
+            }
+            $peerProcess = Start-Process -FilePath $Peer -ArgumentList $peerArgs -RedirectStandardOutput $peerOut -RedirectStandardError $peerErr -PassThru -NoNewWindow
+            Remove-Item Env:CEC_DIAG_FILE, Env:CES_DIAG_FILE -ErrorAction SilentlyContinue
+            if (-not (Wait-ForServer -Port $port -ForProtocol $Protocol -ServerProcess $peerProcess)) {
+                throw 'peer server did not become ready within its deadline'
+            }
+        }
         if ($Component -eq 'client' -and (Test-Feature 'notify-diagnostics')) { $env:CEC_DIAG_FILE = $diagFile }
         if ($Component -eq 'server' -and (Test-Feature 'notify-diagnostics')) { $env:CES_DIAG_FILE = $diagFile }
         $quoted = @($arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
@@ -333,6 +413,17 @@ function Invoke-Test {
         $stdout = Read-TextFile -Path $outFile
         $stderr = Read-TextFile -Path $errFile
         if ($runtime) { $metrics = Convert-FinalLine -Text $stdout -Role $Component -Quiet:($arguments -contains '/q') }
+        if ($peerProcess) {
+            $peerDone = $peerProcess.WaitForExit(30000)
+            if ($peerDone) { $peerExit = $peerProcess.ExitCode } else { $peerProcess.Kill($true) | Out-Null }
+            $peerText = Read-TextFile -Path $peerOut
+            $peerError = Read-TextFile -Path $peerErr
+            $peerMetrics = Convert-FinalLine -Text $peerText -Role $PeerKind -Quiet:($peerArgs -contains '/q')
+            if (Test-Feature 'notify-diagnostics') {
+                $peerWorkers = Get-WorkerCount -Role $PeerKind -Protocol $Protocol -Arguments $peerArgs
+                [void](Convert-Diagnostics -Path $peerDiag -Role $PeerKind -Protocol $Protocol -ExpectedWorkers $peerWorkers)
+            }
+        }
         if ($runtime -and (Test-Feature 'notify-diagnostics')) {
             $workers = Get-WorkerCount -Role $Component -Protocol $Protocol -Arguments $arguments
             $notify = Convert-Diagnostics -Path $diagFile -Role $Component -Protocol $Protocol -ExpectedWorkers $workers
@@ -342,6 +433,7 @@ function Invoke-Test {
     } finally {
         Remove-Item Env:CEC_DIAG_FILE -ErrorAction SilentlyContinue
         Remove-Item Env:CES_DIAG_FILE -ErrorAction SilentlyContinue
+        if ($peerProcess -and -not $peerProcess.HasExited) { $peerProcess.Kill($true) | Out-Null }
         $duration = [int]((Get-Date) - $started).TotalMilliseconds
         $result = 'FAIL'
         $message = ''
@@ -360,6 +452,10 @@ function Invoke-Test {
             $message = 'unexpected stderr for runtime failure'
         }
         elseif (($exit -eq 0 -or ($runtime -and $exit -ne 3)) -and $stderr.Trim() -ne '') { $message = 'stderr: ' + $stderr.Trim() }
+        elseif ($WithPeer -and -not $peerDone) { $message = 'peer did not stop' }
+        elseif ($WithPeer -and $peerExit -ne 0) { $message = 'peer exit ' + $peerExit }
+        elseif ($WithPeer -and $peerError.Trim() -ne '') { $message = 'peer stderr: ' + $peerError.Trim() }
+        elseif ($WithPeer -and $peerMetrics._error) { $message = 'peer ' + $peerMetrics._error }
         else { $result = 'PASS'; $message = 'ok' }
         $expectedText = ''
         if ($finished) { $expectedText = [string]$ExpectedExit }
@@ -376,10 +472,147 @@ function Invoke-Test {
             notify_gap = $notify.gap; notify_timeouts = $notify.timeouts
             stdout_valid = ($(if ($runtime) { -not $metrics._error } elseif ($ExpectedExit -eq 1) { $stdout.Trim() -eq '' } else { $stdout -match 'Usage:' })).ToString().ToLower()
             stderr_empty = ($stderr.Trim() -eq '').ToString().ToLower()
+            peer_exit_code = $peerExit; peer_stdout_valid = ((-not $WithPeer) -or (-not $peerMetrics._error)).ToString().ToLower()
+            peer_stderr_empty = ($peerError.Trim() -eq '').ToString().ToLower()
             artifact_directory = $casePath; message = $message
         }
         [pscustomobject]@{ test_id=$TestId; protocol=$Protocol; configuration=$Configuration;
-            port=$port; exit_code=$exit; result=$result } |
+            executable=$Executable; peer=$Peer; arguments=$arguments; peer_arguments=$peerArgs;
+            port=$port; exit_code=$exit; peer_exit_code=$peerExit; result=$result } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $casePath 'run.json') -Encoding utf8
+    }
+}
+
+
+function Invoke-StopTest {
+    param([string] $TestId, [string] $Category, [string] $Protocol, [string[]] $PeerArguments, [int] $TimeoutMs = 40000)
+    if (-not (Test-CaseSelected -TestId $TestId)) { return }
+    if (-not $PeerAvailable) {
+        Add-Row -Values @{ test_id = $TestId; category = $Category; protocol = $Protocol; result = 'SKIP'
+            message = "skipped: no $PeerKind executable declared" }
+        return
+    }
+    $port = Get-FreePort
+    $tag = [Guid]::NewGuid().ToString('N')
+    $casePath = Join-Path $CaseDir ($TestId + '-' + $tag)
+    New-Item -ItemType Directory -Path $casePath | Out-Null
+    $outFile = Join-Path $casePath 'stdout.txt'
+    $errFile = Join-Path $casePath 'stderr.txt'
+    $diagFile = Join-Path $casePath 'diagnostics.txt'
+    $peerOut = Join-Path $casePath 'peer-stdout.txt'
+    $peerErr = Join-Path $casePath 'peer-stderr.txt'
+    $peerDiag = Join-Path $casePath 'peer-diagnostics.txt'
+    $started = Get-Date
+    $server = $null
+    $client = $null
+    $serverDone = $false
+    $serverExit = -1
+    $clientDone = $false
+    $peerExit = -1
+    $peerOk = $false
+    $serverErr = ''
+    $peerError = ''
+    $peerText = ''
+    $peerMetrics = @{}
+    $serverArgs = @()
+    $arguments = @()
+    $metrics = @{}
+    $notify = @{ arms = ''; deliveries = ''; gap = ''; timeouts = '' }
+    $failure = ''
+    try {
+        if (Test-Feature 'notify-diagnostics') { $env:CES_DIAG_FILE = $diagFile }
+        $arguments = @($PeerArguments | ForEach-Object { $_ -replace '@PORT@', [string]$port })
+        # The server has to outlive its peer. When the peer runs under its own /w limit, a server
+        # that stops first tears down live connections and the peer legitimately reports the
+        # attempts it had in flight as lost, which no longer distinguishes a defect from the stop.
+        $peerRun = 0
+        for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/w') { [void][int64]::TryParse($arguments[$i + 1], [ref]$peerRun) } }
+        $serverSeconds = [int]([Math]::Max(5, $peerRun + 5))
+        $serverArgs = @('/p', $Protocol, '/s', [string]$port, '/w', [string]$serverSeconds, '/q', '/stats')
+        $server = Start-Process -FilePath $Executable -ArgumentList $serverArgs -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -NoNewWindow
+        if (-not (Wait-ForServer -Port $port -ForProtocol $Protocol -ServerProcess $server)) {
+            throw 'server did not become ready within its deadline'
+        }
+        # The peer's /n is the quota the case expects it to complete on a reliable transport.
+        $quota = 0
+        for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/n') { [void][int64]::TryParse($arguments[$i + 1], [ref]$quota) } }
+        # The quota is per session, so a case with /c sessions completes /n times /c echoes in total.
+        $peerSessions = 1
+        for ($i = 0; $i -lt $arguments.Count - 1; $i++) { if ($arguments[$i] -eq '/c') { [void][int64]::TryParse($arguments[$i + 1], [ref]$peerSessions) } }
+        if ($peerSessions -le 0) { $peerSessions = 1 }
+        $expectedEchoes = $quota * $peerSessions
+        # Only a finite TCP run that is expected to finish can be reconciled byte for byte: a stopped run
+        # leaves one partial echo on the server and none on the peer, and UDP may lose datagrams.
+        $strictQuota = ($Protocol -eq 'tcp') -and ($quota -gt 0) -and ($Category -in @('TCP','CAPACITY','ADMISSION','RESET'))
+        $quoted = @($arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
+        if (Test-Feature 'notify-diagnostics') { $env:CEC_DIAG_FILE = $peerDiag }
+        $client = Start-Process -FilePath $Peer -ArgumentList $quoted -RedirectStandardOutput $peerOut -RedirectStandardError $peerErr -PassThru -NoNewWindow
+        Remove-Item Env:CEC_DIAG_FILE -ErrorAction SilentlyContinue
+        $clientDone = $client.WaitForExit($TimeoutMs)
+        if ($clientDone) { $peerExit = $client.ExitCode }
+        if (-not $clientDone) { $client.Kill($true) | Out-Null }
+        $serverDone = $server.WaitForExit(($serverSeconds + 15) * 1000)
+        if ($serverDone) { $serverExit = $server.ExitCode } else { $server.Kill($true) | Out-Null }
+        $serverErr = Read-TextFile -Path $errFile
+        $peerText = Read-TextFile -Path $peerOut
+        $peerError = Read-TextFile -Path $peerErr
+        $peerMetrics = Convert-FinalLine -Text $peerText -Role 'client' -Quiet:($arguments -contains '/q')
+        $peerOk = ($peerExit -eq 0 -or ($Protocol -eq 'udp' -and $peerExit -eq 3 -and $peerMetrics.corrupted -eq '0'))
+        $serverText = Read-TextFile -Path $outFile
+        $metrics = Convert-FinalLine -Text $serverText -Role 'server' -Quiet:($serverArgs -contains '/q')
+        if (Test-Feature 'notify-diagnostics') {
+            $serverWorkers = Get-WorkerCount -Role 'server' -Protocol $Protocol -Arguments $serverArgs
+            $notify = Convert-Diagnostics -Path $diagFile -Role 'server' -Protocol $Protocol -ExpectedWorkers $serverWorkers
+            $clientWorkers = Get-WorkerCount -Role 'client' -Protocol $Protocol -Arguments $arguments
+            [void](Convert-Diagnostics -Path $peerDiag -Role 'client' -Protocol $Protocol -ExpectedWorkers $clientWorkers)
+        }
+    } catch {
+        $failure = $_.Exception.Message
+    } finally {
+        Remove-Item Env:CES_DIAG_FILE -ErrorAction SilentlyContinue
+        Remove-Item Env:CEC_DIAG_FILE -ErrorAction SilentlyContinue
+        if ($server -and -not $server.HasExited) { $server.Kill($true) | Out-Null }
+        if ($client -and -not $client.HasExited) { $client.Kill($true) | Out-Null }
+        $duration = [int]((Get-Date) - $started).TotalMilliseconds
+        $result = 'FAIL'
+        $message = ''
+        if ($failure -ne '') { $message = 'case error: ' + $failure }
+        elseif (-not $serverDone) { $message = 'server did not stop' }
+        elseif ($serverExit -ne 0) { $message = 'server exit ' + $serverExit }
+        elseif ($serverErr.Trim() -ne '') { $message = 'server stderr: ' + $serverErr.Trim() }
+        elseif ($metrics._error) { $message = $metrics._error }
+        elseif ($metrics.protocol -ne $Protocol) { $message = 'server reported wrong protocol' }
+        elseif ($metrics.workers -ne [string](Get-WorkerCount -Role 'server' -Protocol $Protocol -Arguments $serverArgs)) { $message = 'server reported wrong worker count' }
+        elseif (-not $clientDone) { $message = 'peer did not stop' }
+        elseif ($peerMetrics._error) { $message = 'peer ' + $peerMetrics._error }
+        elseif ($peerError.Trim() -ne '') { $message = 'peer stderr: ' + $peerError.Trim() }
+        elseif (-not $peerOk) { $message = 'peer exit ' + $peerExit }
+        elseif ([uint64]($peerMetrics['echoed']) -le 0) { $message = 'peer reported no echo traffic' }
+        elseif ([int64]($peerMetrics['corrupted']) -gt 0) { $message = 'peer reported corrupted echoes: ' + $peerMetrics['corrupted'] }
+        elseif ($Protocol -eq 'tcp' -and [int64]($peerMetrics['lost']) -gt 0) { $message = 'peer reported lost echoes: ' + $peerMetrics['lost'] }
+        elseif ($strictQuota -and [int64]($peerMetrics['echoed']) -ne $expectedEchoes) { $message = 'peer echoed ' + $peerMetrics['echoed'] + ' of ' + $expectedEchoes + ' (' + $quota + ' per session over ' + $peerSessions + ')' }
+        elseif ($strictQuota -and $metrics['bytes'] -ne '' -and $peerMetrics['bytes'] -ne '' -and $metrics['bytes'] -ne $peerMetrics['bytes']) { $message = 'byte accounting differs: server ' + $metrics['bytes'] + ', peer ' + $peerMetrics['bytes'] }
+        else { $result = 'PASS'; $message = 'ok' }
+        Add-Row @{
+            test_id = $TestId; category = $Category; protocol = $Protocol; result = $result
+            exit_code = $serverExit; expected_exit_code = '0'; duration_ms = $duration
+            sessions = $peerMetrics['sessions']; workers = $metrics['workers']; echoed = $peerMetrics['echoed']
+            attempted = $metrics['attempted']; pending = $metrics['pending']; corrupted = $metrics['corrupted']
+            lost = $metrics['lost']; cancelled = $metrics['cancelled']; connections = $metrics['connections']
+            reconnects = $metrics['reconnects']; network_errors = $metrics['network_errors']
+            echo_per_sec = $metrics['echo_per_sec']; mib_per_sec = $metrics['MiB_per_sec']
+            p50_us = $metrics['p50_us']; p99_us = $metrics['p99_us']; p999_us = $metrics['p999_us']
+            notify_arms = $notify.arms; notify_deliveries = $notify.deliveries
+            notify_gap = $notify.gap; notify_timeouts = $notify.timeouts
+            stdout_valid = (-not $metrics._error).ToString().ToLower()
+            stderr_empty = ($serverErr.Trim() -eq '').ToString().ToLower()
+            peer_exit_code = $peerExit; peer_stdout_valid = (-not $peerMetrics._error).ToString().ToLower()
+            peer_stderr_empty = ($peerError.Trim() -eq '').ToString().ToLower()
+            artifact_directory = $casePath; message = $message
+        }
+        [pscustomobject]@{ test_id=$TestId; protocol=$Protocol; configuration=$Configuration;
+            executable=$Executable; peer=$Peer; arguments=$serverArgs; peer_arguments=$arguments;
+            port=$port; exit_code=$serverExit; peer_exit_code=$peerExit; result=$result } |
             ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $casePath 'run.json') -Encoding utf8
     }
 }
@@ -393,89 +626,122 @@ $Perf = [string]$PerfSeconds
 $CliOne = if ($Component -eq 'client') { '/p' } else { '/p' }
 # Artifact writes remain terminating errors; each case already records caught runtime failures.
 if ($Component -eq 'client') {
-    Invoke-Test -TestId 'CLI-001' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h') -ExpectedExit 0 -ExpectPattern 'Usage:'
-    Invoke-Test -TestId 'CLI-002' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/p', 'sctp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments'
-    Invoke-Test -TestId 'CLI-003' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1
-    Invoke-Test -TestId 'CLI-004' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/unknown') -ExpectedExit 1
-    Invoke-Test -TestId 'PARSE-001' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PARSE-002' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/s', '1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PARSE-003' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PARSE-004' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '65537') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PARSE-005' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'ORDER-003' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'ORDER-004' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'CLI-001' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h') -ExpectedExit 0 -ExpectPattern 'Usage:' -WithPeer $false
+    Invoke-Test -TestId 'CLI-002' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/p', 'sctp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments' -WithPeer $false
+    Invoke-Test -TestId 'CLI-003' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -WithPeer $false
+    Invoke-Test -TestId 'CLI-004' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/unknown') -ExpectedExit 1 -WithPeer $false
+    Invoke-Test -TestId 'PARSE-001' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PARSE-002' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/s', '1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PARSE-003' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PARSE-004' -Category 'PARSE' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '65537') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PARSE-005' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-003' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/k', '4', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-004' -Category 'ORDER' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'udp', '/k', '4') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
     # Missing arguments are part of the contract: the reference reports the missing target first and
     # the missing protocol second, each with one exact token.
-    Invoke-Test -TestId 'MISSING-001' -Category 'MISSING' -Protocol 'tcp' -Arguments @() -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-target' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'MISSING-002' -Category 'MISSING' -Protocol 'tcp' -Arguments @('127.0.0.1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'MISSING-003' -Category 'MISSING' -Protocol 'tcp' -Arguments @('/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-target' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/n', '1', '/d', 'x') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout'
-    Invoke-Test -TestId 'HELP-002' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'HELP-003' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/rc', '1', '/l', '127.0.0.1:1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'MISSING-001' -Category 'MISSING' -Protocol 'tcp' -Arguments @() -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-target' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MISSING-002' -Category 'MISSING' -Protocol 'tcp' -Arguments @('127.0.0.1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MISSING-003' -Category 'MISSING' -Protocol 'tcp' -Arguments @('/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-target' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/n', '1', '/d', 'x') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
+    Invoke-Test -TestId 'HELP-002' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'HELP-003' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/rc', '1', '/l', '127.0.0.1:1234') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: invalid-number' -ExpectStream 'stderr' -WithPeer $false
     # Every line below is a measured reference answer for that command line. The token, the exit code
     # and the stream are the contract, so a paraphrase or a different precedence is a failure.
-    Invoke-Test -TestId 'CONFLICT-001' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'CONFLICT-002' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('/h', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PORT-001' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/c', '2') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PORT-002' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/rc', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'CONFLICT-001' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'CONFLICT-002' -Category 'CONFLICT' -Protocol 'tcp' -Arguments @('/h', '/d', 'x', '/z', '8') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: conflicting-payload' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PORT-001' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/c', '2') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PORT-002' -Category 'PORT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/l', '7000', '/rc', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: local-port-conflict' -ExpectStream 'stderr' -WithPeer $false
     # The worker split is validated before the mandatory arguments, so a missing target does not win.
-    Invoke-Test -TestId 'WORKER-001' -Category 'WORKER' -Protocol 'tcp' -Arguments @('/c', '1', '/threads', '2', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'QUOTA-005' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/n', '18446744073709551615', '/c', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: quota-overflow' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'VALUE-001' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/q=1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unexpected-value' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'VALUE-002' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/r=') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-value' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'VALUE-003' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/p', 'sctp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PAYLOAD-002' -Category 'PAYLOAD' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/z', '65508') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PAYLOAD-003' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '65536', '/z', '65536') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'WORKER-001' -Category 'WORKER' -Protocol 'tcp' -Arguments @('/c', '1', '/threads', '2', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'QUOTA-005' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/n', '18446744073709551615', '/c', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: quota-overflow' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-001' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/q=1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unexpected-value' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-002' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/r=') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-value' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'VALUE-003' -Category 'VALUE' -Protocol 'tcp' -Arguments @('/p', 'sctp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: out-of-range' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PAYLOAD-002' -Category 'PAYLOAD' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/z', '65508') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PAYLOAD-003' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '65536', '/z', '65536') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: payload-size' -ExpectStream 'stderr' -WithPeer $false
     # /h suppresses only missing-target and missing-protocol; the budgets still apply.
-    Invoke-Test -TestId 'CQ-002' -Category 'CQ' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'CQ-002' -Category 'CQ' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'TCP-001' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=20'
+    Invoke-Test -TestId 'TCP-002' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '100', '/k', '8', '/z', '1024', '/q', '/stats') -ExpectPattern 'echoed=100'
+    Invoke-Test -TestId 'TCP-003' -Category 'TCP' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '10', '/d', 'echo from toolkit', '/q', '/stats') -ExpectPattern 'echoed=10'
     # A datagram may be dropped by the host under load, and the reference classifies that as one lost
     # echo plus an echo failure. Out of twenty echoes one loss is tolerated so the case still measures
     # the payload path instead of the scheduler, while corruption and a second loss are not.
+    Invoke-Test -TestId 'UDP-001' -Category 'UDP' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '20', '/z', '1200', '/q', '/stats') -ExpectPattern 'echoed=(19|20) ' -AllowExitCodes @(3)
     # A one-byte datagram is the smallest legal payload. On a loaded host a single datagram can be lost,
     # and the reference classifies that as lost plus an echo failure, so exit 3 is tolerated here while
     # corruption never is.
+    Invoke-Test -TestId 'UDP-002' -Category 'UDP' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '20', '/z', '1', '/q', '/stats') -ExpectPattern 'corrupted=0' -AllowExitCodes @(3)
     # The default payload is part of the contract: 'echo from <host>' is 19 bytes for 127.0.0.1, so two
     # echoes account for 38 bytes. Every port must put the same bytes on the wire, and this is the only
     # case that pins the default payload length instead of the echo count.
+    Invoke-Test -TestId 'PAYLOAD-001' -Category 'PAYLOAD' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '2', '/c', '1', '/q', '/stats') -ExpectPattern 'bytes=38'
     # /n is a per-session quota: four sessions of two echoes are eight echoes in total. A run that
     # spends one global budget reports 2 instead, which is how Zig and Swift once differed here.
+    Invoke-Test -TestId 'QUOTA-003' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '2', '/c', '4', '/k', '1', '/q', '/stats') -ExpectPattern 'echoed=8'
+    Invoke-Test -TestId 'QUOTA-004' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/c', '2', '/k', '4', '/q', '/stats') -ExpectPattern 'echoed=10'
+    Invoke-Test -TestId 'QUOTA-001' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=1'
+    Invoke-Test -TestId 'QUOTA-002' -Category 'QUOTA' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '2', '/z', '256', '/q', '/stats')
     # One attempt is one receive plus one send whatever /k is, so the largest shard reserves two
     # operations per session against the completion queue and two batches of registered memory.
-    Invoke-Test -TestId 'CQ-001' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'MEM-001' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '2', '/z', '300000', '/memory', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'CQ-001' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/c', '200', '/threads', '4', '/cq', '64') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: cq-capacity' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MEM-001' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/k', '2', '/z', '300000', '/memory', '1048576') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr' -WithPeer $false
     # The same budgets accepted: the run reaches the network and fails to connect, which is exit 3 and
     # proves the configuration was not rejected.
-    Invoke-Test -TestId 'CQ-003' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '64', '/threads', '2', '/cq', '64', '/k', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3
-    Invoke-Test -TestId 'CQ-004' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '1', '/k', '64', '/cq', '64', '/z', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3
-    Invoke-Test -TestId 'MEM-002' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '2', '/z', '300000', '/memory', '2097152', '/t', '1', '/q', '/stats') -ExpectedExit 3
+    Invoke-Test -TestId 'CQ-003' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '64', '/threads', '2', '/cq', '64', '/k', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    Invoke-Test -TestId 'CQ-004' -Category 'CQ' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/c', '1', '/k', '64', '/cq', '64', '/z', '1', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    Invoke-Test -TestId 'MEM-002' -Category 'MEM' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/k', '2', '/z', '300000', '/memory', '2097152', '/t', '1', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
     # /k is the number of echoes one attempt carries, so a finite quota ends with a shorter attempt and
     # the byte count stays exactly /n times the payload.
-    Invoke-Test -TestId 'TIMEOUT-001' -Category 'TIMEOUT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/t', '1', '/w', '5', '/q', '/stats') -ExpectedExit 3
+    Invoke-Test -TestId 'BATCH-001' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/k', '4', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=5 .*bytes=1280'
+    Invoke-Test -TestId 'BATCH-002' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '17', '/k', '8', '/z', '512', '/q', '/stats') -ExpectPattern 'echoed=17 .*bytes=8704'
+    Invoke-Test -TestId 'BATCH-003' -Category 'BATCH' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '7', '/k', '3', '/c', '2', '/z', '128', '/q', '/stats') -ExpectPattern 'echoed=14 .*bytes=1792'
+    Invoke-Test -TestId 'TIMEOUT-001' -Category 'TIMEOUT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '9', '/n', '1', '/t', '1', '/w', '5', '/q', '/stats') -ExpectedExit 3 -WithPeer $false
+    Invoke-Test -TestId 'RECONNECT-001' -Category 'RECONNECT' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '5', '/rc', '1', '/z', '256', '/q', '/stats') -ExpectPattern 'echoed=5'
+    Invoke-Test -TestId 'SHUTDOWN-001' -Category 'SHUTDOWN' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '3', '/z', '256', '/q', '/stats')
+    Invoke-Test -TestId 'SHUTDOWN-002' -Category 'SHUTDOWN' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '1', '/c', '8', '/k', '4', '/z', '256', '/q', '/stats')
+    Invoke-Test -TestId 'NOTIFY-001' -Category 'NOTIFY' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '3', '/c', '4', '/z', '512', '/q', '/stats')
+    Invoke-Test -TestId 'SOAK-001' -Category 'SOAK' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', $Soak, '/z', '1024', '/q', '/stats') -TimeoutMs (($SoakSeconds + 40) * 1000)
+    Invoke-Test -TestId 'PERF-TCP-001' -Category 'PERF' -Protocol 'tcp' -Arguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', $Perf, '/c', '8', '/k', '8', '/z', '4096', '/q', '/stats') -TimeoutMs (($PerfSeconds + 40) * 1000)
     # Five seconds of unlimited datagram traffic on eight sessions moves a few hundred thousand
     # datagrams; a single drop is the host, not the implementation, so the echo-failure exit code is
     # tolerated while the case still requires real traffic and no corruption.
+    Invoke-Test -TestId 'PERF-UDP-001' -Category 'PERF' -Protocol 'udp' -Arguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '0', '/w', $Perf, '/c', '8', '/z', '1200', '/q', '/stats') -ExpectPattern 'corrupted=0' -AllowExitCodes @(3) -TimeoutMs (($PerfSeconds + 40) * 1000)
 } else {
-    Invoke-Test -TestId 'CLI-001' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h') -ExpectedExit 0 -ExpectPattern 'Usage:'
-    Invoke-Test -TestId 'CLI-002' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/p', 'sctp') -ExpectedExit 1
-    Invoke-Test -TestId 'CLI-003' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1
-    Invoke-Test -TestId 'PARSE-001' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/t', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'PARSE-002' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'CLI-001' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h') -ExpectedExit 0 -ExpectPattern 'Usage:' -WithPeer $false
+    Invoke-Test -TestId 'CLI-002' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/p', 'sctp') -ExpectedExit 1 -WithPeer $false
+    Invoke-Test -TestId 'CLI-003' -Category 'CLI' -Protocol 'tcp' -Arguments @('/h', '/b', '1.0') -ExpectedExit 1 -WithPeer $false
+    Invoke-Test -TestId 'PARSE-001' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/h', '/p', 'udp', '/t', '1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'PARSE-002' -Category 'PARSE' -Protocol 'tcp' -Arguments @('/zzz') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unknown-switch' -ExpectStream 'stderr' -WithPeer $false
     # The raw UDP arena fits 1,050,416 bytes, but VirtualAlloc rounds it to 1,052,672.
     # Validation precedes /h; the exact rounded budget must reach Usage.
-    Invoke-Test -TestId 'UDP-MEM-001' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1050416') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'UDP-MEM-002' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1052671') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'UDP-MEM-003' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1052672') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout'
-    Invoke-Test -TestId 'UDP-MEM-004' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '4097', '/cq', '16384', '/rio-buffer', '1048176', '/memory', '4294967296') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout'
-    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/t', '1', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr'
+    Invoke-Test -TestId 'UDP-MEM-001' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1050416') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'UDP-MEM-002' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1052671') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: memory-capacity' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'UDP-MEM-003' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '16', '/memory', '1052672') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
+    Invoke-Test -TestId 'UDP-MEM-004' -Category 'MEM' -Protocol 'udp' -Arguments @('/h', '/p', 'udp', '/k', '4097', '/cq', '16384', '/rio-buffer', '1048176', '/memory', '4294967296') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-001' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/t', '1', '/p', 'udp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'ORDER-002' -Category 'ORDER' -Protocol 'tcp' -Arguments @('/h', '/k', '4', '/p', 'tcp') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: protocol-option' -ExpectStream 'stderr' -WithPeer $false
     # Missing arguments are part of the contract: the reference reports the missing protocol first and
     # rejects a stray target second.
-    Invoke-Test -TestId 'MISSING-001' -Category 'MISSING' -Protocol 'tcp' -Arguments @() -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'MISSING-002' -Category 'MISSING' -Protocol 'tcp' -Arguments @('/s', '7000') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'MISSING-003' -Category 'MISSING' -Protocol 'tcp' -Arguments @('127.0.0.1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unexpected-target' -ExpectStream 'stderr'
-    Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/s', '1234') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout'
+    Invoke-Test -TestId 'MISSING-001' -Category 'MISSING' -Protocol 'tcp' -Arguments @() -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MISSING-002' -Category 'MISSING' -Protocol 'tcp' -Arguments @('/s', '7000') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: missing-protocol' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'MISSING-003' -Category 'MISSING' -Protocol 'tcp' -Arguments @('127.0.0.1') -ExpectedExit 1 -ExpectPattern 'Invalid arguments: unexpected-target' -ExpectStream 'stderr' -WithPeer $false
+    Invoke-Test -TestId 'HELP-001' -Category 'HELP' -Protocol 'tcp' -Arguments @('/h', '/p', 'tcp', '/s', '1234') -ExpectedExit 0 -ExpectPattern 'Usage:' -ExpectStream 'stdout' -WithPeer $false
+    Invoke-StopTest -TestId 'TCP-001' -Category 'TCP' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/z', '256', '/q', '/stats')
+    Invoke-StopTest -TestId 'TCP-002' -Category 'TCP' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '200', '/c', '4', '/k', '8', '/z', '1024', '/q', '/stats')
+    Invoke-StopTest -TestId 'UDP-001' -Category 'UDP' -Protocol 'udp' -PeerArguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '50', '/z', '1200', '/q', '/stats')
+    Invoke-StopTest -TestId 'UDP-002' -Category 'UDP' -Protocol 'udp' -PeerArguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '50', '/z', '1', '/q', '/stats')
+    Invoke-StopTest -TestId 'CAPACITY-001' -Category 'CAPACITY' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '200', '/c', '16', '/k', '4', '/z', '2048', '/q', '/stats')
+    Invoke-StopTest -TestId 'ADMISSION-001' -Category 'ADMISSION' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '100', '/c', '32', '/k', '2', '/z', '512', '/q', '/stats')
+    Invoke-StopTest -TestId 'RESET-001' -Category 'RESET' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/t', '1', '/q', '/stats')
+    Invoke-StopTest -TestId 'RESET-002' -Category 'RESET' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '20', '/rc', '1', '/q', '/stats')
+    Invoke-StopTest -TestId 'SHUTDOWN-001' -Category 'SHUTDOWN' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '3', '/q', '/stats')
+    Invoke-StopTest -TestId 'NOTIFY-001' -Category 'NOTIFY' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', '3', '/c', '8', '/q', '/stats')
+    Invoke-StopTest -TestId 'SOAK-001' -Category 'SOAK' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', $Soak, '/c', '8', '/k', '8', '/z', '1024', '/q', '/stats')
+    Invoke-StopTest -TestId 'PERF-TCP-001' -Category 'PERF' -Protocol 'tcp' -PeerArguments @('127.0.0.1', '/p', 'tcp', '/r', '@PORT@', '/n', '0', '/w', $Perf, '/c', '8', '/k', '8', '/z', '4096', '/q', '/stats')
+    Invoke-StopTest -TestId 'PERF-UDP-001' -Category 'PERF' -Protocol 'udp' -PeerArguments @('127.0.0.1', '/p', 'udp', '/r', '@PORT@', '/n', '0', '/w', $Perf, '/c', '8', '/z', '1200', '/q', '/stats')
 }
 
 Save-Results
