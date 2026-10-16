@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 # implementation: the project is <implementation>-echo-<component>.
 $Root           = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $Project        = Split-Path $Root -Leaf
-$ProjectPattern = '^(cpp|rust|zig|swift)-echo-(client|server)\z'
+$ProjectPattern = '^(cpp|rust|zig|swift|dotnet)-echo-(client|server)\z'
 if ($Project -notmatch $ProjectPattern) {
     throw "unexpected project name: $Project"
 }
