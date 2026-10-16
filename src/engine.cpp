@@ -672,8 +672,14 @@ static void cec_engine_worker_destroy(cec_engine_worker* worker) noexcept {
     resources->timer_positions.reset();
     worker->core.timers = {};
     resources->port.reset();
-    worker->transport.native.port = nullptr;
+    worker->transport.native.port      = nullptr;
     // Embedded notification OVERLAPPED remains alive until the last referencing IOCP has closed.
+    // Both back-pointers are non-owning, so teardown disowns the pair here: everything the resource
+    // destructor would check has just been checked and released, and clearing the worker's mirror
+    // leaves no stale resources pointer behind. A resources object that never reached this function
+    // - an initialization that failed before teardown - keeps its owner and still runs the guard.
+    resources->owner                   = nullptr;
+    worker->transport.native.resources = nullptr;
 }
 
 cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop_requested) noexcept {
@@ -730,6 +736,9 @@ cec_exit_code cec_run_client(const cec_options* options, std::atomic<bool>* stop
     const std::uint32_t                            worker_count = cec_resolve_worker_count(options);
     // A real C++ allocation instead of a zero-filled heap block, so every worker member is
     // constructed by its default member initialiser rather than by a memset.
+    // Declaration order is the lifetime contract: the resources are declared after the workers, so
+    // they are destroyed first, while every cec_native_worker they point back to is still alive for
+    // the resource destructor's fallback guard.
     std::unique_ptr<cec_engine_worker[]>           workers{ new (std::nothrow) cec_engine_worker[worker_count] };
     std::unique_ptr<cec_engine_worker_resources[]> worker_resources{ new (std::nothrow)
                                                                          cec_engine_worker_resources[worker_count] };
