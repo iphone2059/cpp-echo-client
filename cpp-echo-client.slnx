@@ -2,5 +2,5 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="cpp-echo-client.vcxproj" />
+  <Project Path="cpp-echo-client.vcxproj" Id="6279a516-2b13-41a7-807c-dadbbdbe028c" />
 </Solution>
