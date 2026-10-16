@@ -233,10 +233,12 @@ class cec_worker_runtime {
 };
 
 export struct cec_engine_worker {
-    cec_worker_core    core{};
-    cec_rio_transport  transport{};
-    std::atomic<bool>* external_stop = nullptr;
-    std::atomic<bool>* fatal         = nullptr;
+    cec_worker_core                              core{};
+    cec_rio_transport                            transport{};
+    // The worker alone drains its CQ. Provider results overwrite only the returned prefix.
+    std::array<RIORESULT, cec_engine_batch_size> completion_results{};
+    std::atomic<bool>*                           external_stop = nullptr;
+    std::atomic<bool>*                           fatal         = nullptr;
 };
 
 export class cec_atomic_stop_probe {
@@ -337,7 +339,7 @@ static void cec_runtime_completion(cec_engine_worker* worker, cec_completion com
 static void cec_runtime_drain(cec_engine_worker* worker,
                               std::uint64_t      maximum_batches = cec_engine_max_drain_batches,
                               std::uint64_t      maximum_results = UINT64_MAX) noexcept {
-    std::array<RIORESULT, cec_engine_batch_size> results{};
+    auto& results = worker->completion_results;
     for (std::uint64_t batch = 0; batch < maximum_batches && maximum_results != 0; ++batch) {
         const ULONG requested = static_cast<ULONG>(std::min<std::uint64_t>(results.size(), maximum_results));
         const ULONG count =
