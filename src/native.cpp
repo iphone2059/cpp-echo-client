@@ -138,6 +138,10 @@ export class cec_engine_worker_resources;
 export struct cec_engine_request {
     cec_native_slot*     slot;
     cec_engine_operation operation;
+    /// The generation this stable request context belongs to. The context address never changes for
+    /// the lifetime of its slot, so the generation travels with the context and lets the retire path
+    /// reject a completion that belongs to a generation the slot has already left.
+    std::uint32_t        generation = 0;
 };
 
 export struct cec_native_slot {
@@ -150,6 +154,9 @@ export struct cec_native_slot {
     RIO_BUF            receive_buffer;
     RIO_BUF            send_buffer;
     std::uint32_t      index;
+    /// Identity of the generation currently admitted into this slot. It changes only at the reuse
+    /// point, after the drain precondition proved nothing of the previous generation is in flight.
+    std::uint32_t      generation = 0;
     std::uint32_t      outstanding;
     std::uint32_t      rio_outstanding;
     std::size_t        attempt_bytes;
@@ -861,9 +868,16 @@ bool cec_native_connect_slot(cec_native_slot* session) noexcept {
         session->send_outstanding || session->receive_outstanding) {
         cec_engine_fail_fast(L"client generation reuse precondition", ERROR_IO_INCOMPLETE);
     }
-    session->closing       = false;
-    session->request_queue = RIO_INVALID_RQ;
-    const bool tcp         = session->owner->options->protocol == cec_protocol::tcp;
+    // This is the slot's only reuse point, so it is where the generation changes. The stable request
+    // contexts are retagged before any operation of the new generation can be posted, so a completion
+    // still carrying the previous generation is rejected rather than attributed to this one. The tag
+    // wraps to one at the limit: it is an identity, not an ownership ledger.
+    session->generation                 = session->generation == UINT32_MAX ? 1U : session->generation + 1U;
+    session->receive_request.generation = session->generation;
+    session->send_request.generation    = session->generation;
+    session->closing                    = false;
+    session->request_queue              = RIO_INVALID_RQ;
+    const bool tcp                      = session->owner->options->protocol == cec_protocol::tcp;
     session->socket = cec_engine_registered_socket(tcp ? SOCK_STREAM : SOCK_DGRAM, tcp ? IPPROTO_TCP : IPPROTO_UDP);
     session->owner->resources->session_sockets[session->index].reset(session->socket);
     if (session->socket == INVALID_SOCKET ||
@@ -941,6 +955,9 @@ cec_completion cec_native_retire_rio(cec_native_worker* worker, const RIORESULT&
     if (request->slot != slot || slot->owner != worker || request->operation != expected ||
         slot->index != (address - first) / sizeof(cec_native_slot)) {
         cec_engine_fail_fast(L"client RIO RequestContext", ERROR_INVALID_DATA);
+    }
+    if (request->generation != slot->generation) {
+        cec_engine_fail_fast(L"client completion generation", ERROR_IO_INCOMPLETE);
     }
     if (static_cast<std::uintptr_t>(result.SocketContext) != reinterpret_cast<std::uintptr_t>(slot)) {
         cec_engine_fail_fast(L"client RIO SocketContext identity", ERROR_INVALID_DATA);
