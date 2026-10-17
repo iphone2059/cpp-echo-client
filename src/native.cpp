@@ -155,6 +155,15 @@ export inline constexpr std::uint64_t cec_operation_generation_mask =
 export inline constexpr std::uint64_t cec_operation_max_sequence =
     (std::uint64_t{ 1 } << cec_operation_sequence_bits) - 1U;
 
+/// Submission serials wrap, exactly like the generation tag: uniqueness inside one generation comes
+/// from the one-outstanding-operation invariant and from comparing the token with the posted lane
+/// exactly, so a wrapped value can only alias a completion that stayed unretired for a further 2^30
+/// submissions of the same slot. Failing fast at the limit would instead end a long-running worker.
+export inline constexpr std::uint64_t cec_operation_next_sequence(std::uint32_t current) noexcept {
+    const std::uint64_t next = static_cast<std::uint64_t>(current) + 1U;
+    return next > cec_operation_max_sequence ? 1U : next;
+}
+
 /// Operation kinds are encoded one-based, so a valid token is never zero and a decoded kind of zero
 /// is always invalid. The layout is a value, not a pointer: the provider carries it back unchanged.
 export inline constexpr std::uint64_t cec_operation_token_encode(std::uint64_t        slot,
@@ -845,10 +854,10 @@ bool cec_engine_post_send(cec_native_slot* session) noexcept {
     if (!cec_prepare_send_window(&session->send_buffer, session->attempt_bytes, session->send_offset)) {
         cec_engine_fail_fast(L"client send window", ERROR_INVALID_DATA);
     }
-    const std::uint64_t sequence = static_cast<std::uint64_t>(session->send_request.sequence) + 1U;
-    if (sequence > cec_operation_max_sequence || static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
-        cec_engine_fail_fast(L"client send operation sequence", ERROR_INVALID_DATA);
+    if (static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
+        cec_engine_fail_fast(L"client send operation slot", ERROR_INVALID_DATA);
     }
+    const std::uint64_t sequence = cec_operation_next_sequence(session->send_request.sequence);
     const std::uint64_t token =
         cec_operation_token_encode(session->index, cec_engine_operation::send, session->generation, sequence);
     void* const context = reinterpret_cast<void*>(static_cast<std::uintptr_t>(token));
@@ -880,11 +889,11 @@ bool cec_engine_post_receive(cec_native_slot* session, std::size_t bytes) noexce
     session->receive_request.operation = cec_engine_operation::receive;
     session->receive_buffer.Offset     = 0;
     session->receive_buffer.Length     = static_cast<ULONG>(session->attempt_bytes);
-    const DWORD         flags          = session->owner->options->protocol == cec_protocol::tcp ? RIO_MSG_WAITALL : 0U;
-    const std::uint64_t sequence       = static_cast<std::uint64_t>(session->receive_request.sequence) + 1U;
-    if (sequence > cec_operation_max_sequence || static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
-        cec_engine_fail_fast(L"client receive operation sequence", ERROR_INVALID_DATA);
+    const DWORD flags                  = session->owner->options->protocol == cec_protocol::tcp ? RIO_MSG_WAITALL : 0U;
+    if (static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
+        cec_engine_fail_fast(L"client receive operation slot", ERROR_INVALID_DATA);
     }
+    const std::uint64_t sequence = cec_operation_next_sequence(session->receive_request.sequence);
     const std::uint64_t token =
         cec_operation_token_encode(session->index, cec_engine_operation::receive, session->generation, sequence);
     void* const context = reinterpret_cast<void*>(static_cast<std::uintptr_t>(token));
