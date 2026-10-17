@@ -65,5 +65,7 @@ Invoke-FaultCase -Mode 'send_offset_underflow' -ExpectedExitCode 4 -ExpectedStag
 Invoke-FaultCase -Mode 'completion_valid' -ExpectedExitCode 0
 Invoke-FaultCase -Mode 'completion_slot_identity' -ExpectedExitCode 4 -ExpectedStage 'client RIO RequestContext'
 Invoke-FaultCase -Mode 'completion_socket_context' -ExpectedExitCode 4 -ExpectedStage 'client RIO SocketContext identity'
+Invoke-FaultCase -Mode 'completion_stale_generation' -ExpectedExitCode 4 -ExpectedStage 'client completion generation'
+Invoke-FaultCase -Mode 'completion_stale_token' -ExpectedExitCode 4 -ExpectedStage 'client completion identity'
 
 Write-Host 'PASS client fail-fast boundaries'

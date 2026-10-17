@@ -135,13 +135,56 @@ export struct cec_native_slot;
 export struct cec_native_worker;
 export class cec_engine_worker_resources;
 
-export struct cec_engine_request {
-    cec_native_slot*     slot;
-    cec_engine_operation operation;
-    /// The generation this stable request context belongs to. The context address never changes for
-    /// the lifetime of its slot, so the generation travels with the context and lets the retire path
-    /// reject a completion that belongs to a generation the slot has already left.
+/// Identity of one RIO submission. The provider carries this value back, so it cannot change when
+/// the slot is reused: a completion that arrives after the slot was handed to a new generation still
+/// carries the generation and the submission serial of the operation that was actually posted. A
+/// pointer into the reusable slot record cannot express that, because the record is rewritten at the
+/// reuse point and the retire path would read the new values.
+export inline constexpr unsigned cec_operation_slot_bits        = 16U;
+export inline constexpr unsigned cec_operation_kind_bits        = 2U;
+export inline constexpr unsigned cec_operation_generation_bits  = 16U;
+export inline constexpr unsigned cec_operation_sequence_bits    = 30U;
+export inline constexpr unsigned cec_operation_kind_shift       = cec_operation_slot_bits;
+export inline constexpr unsigned cec_operation_generation_shift = cec_operation_slot_bits + cec_operation_kind_bits;
+export inline constexpr unsigned cec_operation_sequence_shift =
+    cec_operation_generation_shift + cec_operation_generation_bits;
+export inline constexpr std::uint64_t cec_operation_slot_mask = (std::uint64_t{ 1 } << cec_operation_slot_bits) - 1U;
+export inline constexpr std::uint64_t cec_operation_kind_mask = (std::uint64_t{ 1 } << cec_operation_kind_bits) - 1U;
+export inline constexpr std::uint64_t cec_operation_generation_mask =
+    (std::uint64_t{ 1 } << cec_operation_generation_bits) - 1U;
+export inline constexpr std::uint64_t cec_operation_max_sequence =
+    (std::uint64_t{ 1 } << cec_operation_sequence_bits) - 1U;
+
+/// Operation kinds are encoded one-based, so a valid token is never zero and a decoded kind of zero
+/// is always invalid. The layout is a value, not a pointer: the provider carries it back unchanged.
+export inline constexpr std::uint64_t cec_operation_token_encode(std::uint64_t        slot,
+                                                                 cec_engine_operation operation,
+                                                                 std::uint32_t        generation,
+                                                                 std::uint64_t        sequence) noexcept {
+    return ((sequence & cec_operation_max_sequence) << cec_operation_sequence_shift) |
+           ((static_cast<std::uint64_t>(generation) & cec_operation_generation_mask)
+            << cec_operation_generation_shift) |
+           (((static_cast<std::uint64_t>(operation) + 1U) & cec_operation_kind_mask) << cec_operation_kind_shift) |
+           (slot & cec_operation_slot_mask);
+}
+
+export struct cec_operation_identity {
+    std::uint32_t        slot       = 0;
     std::uint32_t        generation = 0;
+    std::uint64_t        sequence   = 0;
+    cec_engine_operation operation  = cec_engine_operation::receive;
+};
+
+export cec_operation_identity cec_operation_token_decode(std::uint64_t token, const wchar_t* stage) noexcept;
+
+/// Ownership ledger of one direction's currently posted RIO operation. The token is the immutable
+/// identity handed to the provider, the sequence is that direction's submission serial (never reset
+/// across generations), and posted_length is the extent submitted together with that token.
+export struct cec_engine_request {
+    std::uint64_t        token         = 0;
+    std::uint32_t        posted_length = 0;
+    std::uint32_t        sequence      = 0;
+    cec_engine_operation operation     = cec_engine_operation::receive;
 };
 
 export struct cec_native_slot {
@@ -285,6 +328,23 @@ export bool cec_write_diagnostics(const cec_notify_diagnostic_snapshot* values,
     std::fprintf(stderr, "%s failed: native_error=%d\n", text, error);
     TerminateProcess(GetCurrentProcess(), static_cast<UINT>(cec_exit_code::internal));
     __assume(0);
+}
+
+cec_operation_identity cec_operation_token_decode(std::uint64_t token, const wchar_t* stage) noexcept {
+    cec_operation_identity identity{};
+    if (token == 0) {
+        cec_engine_fail_fast(stage, ERROR_INVALID_DATA);
+    }
+    const std::uint64_t kind = (token >> cec_operation_kind_shift) & cec_operation_kind_mask;
+    identity.slot            = static_cast<std::uint32_t>(token & cec_operation_slot_mask);
+    identity.generation =
+        static_cast<std::uint32_t>((token >> cec_operation_generation_shift) & cec_operation_generation_mask);
+    identity.sequence = token >> cec_operation_sequence_shift;
+    if (kind == 0 || kind > 2U || identity.sequence == 0) {
+        cec_engine_fail_fast(stage, ERROR_INVALID_DATA);
+    }
+    identity.operation = kind == 1U ? cec_engine_operation::receive : cec_engine_operation::send;
+    return identity;
 }
 
 bool cec_write_diagnostics(const cec_notify_diagnostic_snapshot* values,
@@ -778,19 +838,28 @@ static bool cec_engine_create_request_queue(cec_native_slot* session) noexcept {
 }
 
 bool cec_engine_post_send(cec_native_slot* session) noexcept {
-    if (session->send_outstanding) {
+    if (session->send_outstanding || session->send_request.token != 0) {
         cec_engine_fail_fast(L"client duplicate send post", ERROR_INVALID_STATE);
     }
     session->send_request.operation = cec_engine_operation::send;
     if (!cec_prepare_send_window(&session->send_buffer, session->attempt_bytes, session->send_offset)) {
         cec_engine_fail_fast(L"client send window", ERROR_INVALID_DATA);
     }
-    if (session->owner->rio->RIOSend(session->request_queue, &session->send_buffer, 1, 0, &session->send_request) ==
-        FALSE) {
+    const std::uint64_t sequence = static_cast<std::uint64_t>(session->send_request.sequence) + 1U;
+    if (sequence > cec_operation_max_sequence || static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
+        cec_engine_fail_fast(L"client send operation sequence", ERROR_INVALID_DATA);
+    }
+    const std::uint64_t token =
+        cec_operation_token_encode(session->index, cec_engine_operation::send, session->generation, sequence);
+    void* const context = reinterpret_cast<void*>(static_cast<std::uintptr_t>(token));
+    if (session->owner->rio->RIOSend(session->request_queue, &session->send_buffer, 1, 0, context) == FALSE) {
         cec_engine_report(L"RIOSend(client)", WSAGetLastError());
         return false;
     }
-    session->send_outstanding = true;
+    session->send_request.sequence      = static_cast<std::uint32_t>(sequence);
+    session->send_request.token         = token;
+    session->send_request.posted_length = session->send_buffer.Length;
+    session->send_outstanding           = true;
     ++session->outstanding;
     ++session->rio_outstanding;
     ++session->owner->rio_outstanding;
@@ -799,7 +868,7 @@ bool cec_engine_post_send(cec_native_slot* session) noexcept {
 }
 
 bool cec_engine_post_receive(cec_native_slot* session, std::size_t bytes) noexcept {
-    if (session->receive_outstanding) {
+    if (session->receive_outstanding || session->receive_request.token != 0) {
         cec_engine_fail_fast(L"client duplicate receive post", ERROR_INVALID_STATE);
     }
     if (!cec_native_slot_drained(session) || bytes == 0 || bytes > session->owner->maximum_attempt_bytes) {
@@ -811,13 +880,22 @@ bool cec_engine_post_receive(cec_native_slot* session, std::size_t bytes) noexce
     session->receive_request.operation = cec_engine_operation::receive;
     session->receive_buffer.Offset     = 0;
     session->receive_buffer.Length     = static_cast<ULONG>(session->attempt_bytes);
-    const DWORD flags                  = session->owner->options->protocol == cec_protocol::tcp ? RIO_MSG_WAITALL : 0U;
-    if (session->owner->rio->RIOReceive(session->request_queue, &session->receive_buffer, 1, flags,
-                                        &session->receive_request) == FALSE) {
+    const DWORD         flags          = session->owner->options->protocol == cec_protocol::tcp ? RIO_MSG_WAITALL : 0U;
+    const std::uint64_t sequence       = static_cast<std::uint64_t>(session->receive_request.sequence) + 1U;
+    if (sequence > cec_operation_max_sequence || static_cast<std::uint64_t>(session->index) > cec_operation_slot_mask) {
+        cec_engine_fail_fast(L"client receive operation sequence", ERROR_INVALID_DATA);
+    }
+    const std::uint64_t token =
+        cec_operation_token_encode(session->index, cec_engine_operation::receive, session->generation, sequence);
+    void* const context = reinterpret_cast<void*>(static_cast<std::uintptr_t>(token));
+    if (session->owner->rio->RIOReceive(session->request_queue, &session->receive_buffer, 1, flags, context) == FALSE) {
         cec_engine_report(L"RIOReceive(client)", WSAGetLastError());
         return false;
     }
-    session->receive_outstanding = true;
+    session->receive_request.sequence      = static_cast<std::uint32_t>(sequence);
+    session->receive_request.token         = token;
+    session->receive_request.posted_length = session->receive_buffer.Length;
+    session->receive_outstanding           = true;
     ++session->outstanding;
     ++session->rio_outstanding;
     ++session->owner->rio_outstanding;
@@ -865,19 +943,18 @@ std::uint64_t cec_require_latency_microseconds(std::uint64_t ticks, std::uint64_
 
 bool cec_native_connect_slot(cec_native_slot* session) noexcept {
     if (session->outstanding != 0 || session->rio_outstanding != 0 || session->connect_outstanding ||
-        session->send_outstanding || session->receive_outstanding) {
+        session->send_outstanding || session->receive_outstanding || session->receive_request.token != 0 ||
+        session->send_request.token != 0) {
         cec_engine_fail_fast(L"client generation reuse precondition", ERROR_IO_INCOMPLETE);
     }
-    // This is the slot's only reuse point, so it is where the generation changes. The stable request
-    // contexts are retagged before any operation of the new generation can be posted, so a completion
-    // still carrying the previous generation is rejected rather than attributed to this one. The tag
+    // The slot's only reuse point, so it is where the generation changes. Every submission carries the
+    // generation and its own serial inside the request context value, so a completion of the previous
+    // generation can still be told apart after this record has been rewritten for the new one. The tag
     // wraps to one at the limit: it is an identity, not an ownership ledger.
-    session->generation                 = session->generation == UINT32_MAX ? 1U : session->generation + 1U;
-    session->receive_request.generation = session->generation;
-    session->send_request.generation    = session->generation;
-    session->closing                    = false;
-    session->request_queue              = RIO_INVALID_RQ;
-    const bool tcp                      = session->owner->options->protocol == cec_protocol::tcp;
+    session->generation    = session->generation == UINT32_MAX ? 1U : session->generation + 1U;
+    session->closing       = false;
+    session->request_queue = RIO_INVALID_RQ;
+    const bool tcp         = session->owner->options->protocol == cec_protocol::tcp;
     session->socket = cec_engine_registered_socket(tcp ? SOCK_STREAM : SOCK_DGRAM, tcp ? IPPROTO_TCP : IPPROTO_UDP);
     session->owner->resources->session_sockets[session->index].reset(session->socket);
     if (session->socket == INVALID_SOCKET ||
@@ -938,47 +1015,47 @@ void cec_native_close_slot(cec_native_slot* slot) noexcept {
 }
 
 cec_completion cec_native_retire_rio(cec_native_worker* worker, const RIORESULT& result) noexcept {
-    const std::uintptr_t address     = static_cast<std::uintptr_t>(result.RequestContext);
-    const std::uintptr_t first       = reinterpret_cast<std::uintptr_t>(worker->slots);
-    const std::size_t    table_bytes = sizeof(cec_native_slot) * worker->session_count;
-    if (worker->slots == nullptr || address < first || address - first >= table_bytes) {
+    const std::uint64_t          token    = static_cast<std::uint64_t>(result.RequestContext);
+    const cec_operation_identity identity = cec_operation_token_decode(token, L"client RIO RequestContext");
+    if (worker->slots == nullptr || identity.slot >= worker->session_count) {
         cec_engine_fail_fast(L"client RIO RequestContext", ERROR_INVALID_DATA);
     }
-    const std::size_t offset = (address - first) % sizeof(cec_native_slot);
-    if (offset != offsetof(cec_native_slot, receive_request) && offset != offsetof(cec_native_slot, send_request)) {
+    cec_native_slot* slot = &worker->slots[identity.slot];
+    if (slot->owner != worker || slot->index != identity.slot) {
         cec_engine_fail_fast(L"client RIO RequestContext", ERROR_INVALID_DATA);
-    }
-    cec_native_slot*           slot    = &worker->slots[(address - first) / sizeof(cec_native_slot)];
-    const cec_engine_request*  request = reinterpret_cast<const cec_engine_request*>(address);
-    const cec_engine_operation expected =
-        offset == offsetof(cec_native_slot, send_request) ? cec_engine_operation::send : cec_engine_operation::receive;
-    if (request->slot != slot || slot->owner != worker || request->operation != expected ||
-        slot->index != (address - first) / sizeof(cec_native_slot)) {
-        cec_engine_fail_fast(L"client RIO RequestContext", ERROR_INVALID_DATA);
-    }
-    if (request->generation != slot->generation) {
-        cec_engine_fail_fast(L"client completion generation", ERROR_IO_INCOMPLETE);
     }
     if (static_cast<std::uintptr_t>(result.SocketContext) != reinterpret_cast<std::uintptr_t>(slot)) {
         cec_engine_fail_fast(L"client RIO SocketContext identity", ERROR_INVALID_DATA);
     }
+    cec_engine_request* lane =
+        identity.operation == cec_engine_operation::send ? &slot->send_request : &slot->receive_request;
+    // The token is the identity the provider carried back; the lane holds the identity of the operation
+    // this slot believes is posted. A completion of an earlier generation fails here even though the
+    // record it used to point at has since been rewritten for the new generation.
+    if (lane->token != token) {
+        cec_engine_fail_fast(L"client completion identity", ERROR_INVALID_DATA);
+    }
+    if ((slot->generation & static_cast<std::uint32_t>(cec_operation_generation_mask)) != identity.generation) {
+        cec_engine_fail_fast(L"client completion generation", ERROR_IO_INCOMPLETE);
+    }
     if (slot->outstanding == 0 || slot->rio_outstanding == 0 || worker->rio_outstanding == 0) {
         cec_engine_fail_fast(L"client RIO outstanding count", ERROR_INVALID_DATA);
     }
-    bool& posted = expected == cec_engine_operation::send ? slot->send_outstanding : slot->receive_outstanding;
+    bool& posted =
+        identity.operation == cec_engine_operation::send ? slot->send_outstanding : slot->receive_outstanding;
     if (!posted) {
         cec_engine_fail_fast(L"client duplicate RIO completion", ERROR_INVALID_DATA);
     }
-    const ULONG posted_bytes =
-        expected == cec_engine_operation::send ? slot->send_buffer.Length : slot->receive_buffer.Length;
-    if (result.BytesTransferred > posted_bytes) {
+    if (result.BytesTransferred > lane->posted_length) {
         cec_engine_fail_fast(L"client completion exceeds posted range", ERROR_INVALID_DATA);
     }
     // Validate the window before retiring its completion, including the subtraction below.
-    if (expected == cec_engine_operation::send && slot->send_offset > slot->attempt_bytes) {
+    if (identity.operation == cec_engine_operation::send && slot->send_offset > slot->attempt_bytes) {
         cec_engine_fail_fast(L"client send window", ERROR_INVALID_DATA);
     }
-    posted = false;
+    lane->token         = 0;
+    lane->posted_length = 0;
+    posted              = false;
     --slot->outstanding;
     --slot->rio_outstanding;
     --worker->rio_outstanding;
@@ -992,7 +1069,7 @@ cec_completion cec_native_retire_rio(cec_native_worker* worker, const RIORESULT&
     if (result.Status != ERROR_SUCCESS) {
         return { cec_completion_kind::failed, slot->index };
     }
-    if (expected == cec_engine_operation::send) {
+    if (identity.operation == cec_engine_operation::send) {
         if (result.BytesTransferred == 0 || result.BytesTransferred > slot->attempt_bytes - slot->send_offset) {
             return { cec_completion_kind::failed, slot->index };
         }

@@ -499,30 +499,37 @@ static void cec_engine_test_pattern() noexcept {
 static void cec_engine_test_native_generation() noexcept {
     cec_native_worker              native{};
     std::array<cec_native_slot, 1> slots{};
-    native.slots                   = slots.data();
-    native.session_count           = 1;
-    native.rio_outstanding         = 2;
-    slots[0].owner                 = &native;
-    slots[0].closing               = true;
-    slots[0].outstanding           = 2;
-    slots[0].rio_outstanding       = 2;
-    slots[0].attempt_bytes         = 4;
-    slots[0].receive_outstanding   = true;
-    slots[0].send_outstanding      = true;
-    slots[0].receive_request       = { &slots[0], cec_engine_operation::receive };
-    slots[0].send_request          = { &slots[0], cec_engine_operation::send };
-    slots[0].receive_buffer.Length = 4;
-    slots[0].send_buffer.Length    = 4;
+    native.slots                           = slots.data();
+    native.session_count                   = 1;
+    native.rio_outstanding                 = 2;
+    slots[0].owner                         = &native;
+    slots[0].index                         = 0;
+    slots[0].closing                       = true;
+    slots[0].outstanding                   = 2;
+    slots[0].rio_outstanding               = 2;
+    slots[0].attempt_bytes                 = 4;
+    slots[0].receive_outstanding           = true;
+    slots[0].send_outstanding              = true;
+    slots[0].receive_request.operation     = cec_engine_operation::receive;
+    slots[0].receive_request.sequence      = 1;
+    slots[0].receive_request.posted_length = 4;
+    slots[0].receive_request.token         = cec_operation_token_encode(0, cec_engine_operation::receive, 0, 1);
+    slots[0].send_request.operation        = cec_engine_operation::send;
+    slots[0].send_request.sequence         = 1;
+    slots[0].send_request.posted_length    = 4;
+    slots[0].send_request.token            = cec_operation_token_encode(0, cec_engine_operation::send, 0, 1);
+    slots[0].receive_buffer.Length         = 4;
+    slots[0].send_buffer.Length            = 4;
     RIORESULT result{};
     result.Status             = ERROR_OPERATION_ABORTED;
     result.SocketContext      = reinterpret_cast<ULONG_PTR>(&slots[0]);
-    result.RequestContext     = reinterpret_cast<ULONG_PTR>(&slots[0].receive_request);
+    result.RequestContext     = static_cast<ULONG_PTR>(slots[0].receive_request.token);
     cec_completion completion = cec_native_retire_rio(&native, result);
     cec_engine_test_expect(completion.kind == cec_completion_kind::ignored && slots[0].outstanding == 1 &&
                                slots[0].rio_outstanding == 1 && native.rio_outstanding == 1 &&
                                !cec_native_slot_drained(&slots[0]),
                            "native cancellation completion retires only its owned operation");
-    result.RequestContext = reinterpret_cast<ULONG_PTR>(&slots[0].send_request);
+    result.RequestContext = static_cast<ULONG_PTR>(slots[0].send_request.token);
     completion            = cec_native_retire_rio(&native, result);
     cec_engine_test_expect(completion.kind == cec_completion_kind::drained && slots[0].outstanding == 0 &&
                                slots[0].rio_outstanding == 0 && native.rio_outstanding == 0 &&

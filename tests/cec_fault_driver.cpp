@@ -85,44 +85,103 @@ int cec_fault_driver_main(int argc, wchar_t** argv) {
         const bool        bad_socket_context = std::wcscmp(argv[1], L"completion_socket_context") == 0;
         cec_native_worker native{};
         cec_native_slot   slot{};
-        native.slots            = &slot;
-        native.session_count    = 1;
-        native.rio_outstanding  = 1;
-        slot.owner              = &native;
-        slot.outstanding        = 1;
-        slot.rio_outstanding    = 1;
-        slot.send_outstanding   = true;
-        slot.send_request       = { &slot, cec_engine_operation::send };
-        slot.attempt_bytes      = 4;
-        slot.send_offset        = bad_offset ? 5U : 3U;
-        slot.send_buffer.Length = 1;
+        native.slots                    = &slot;
+        native.session_count            = 1;
+        native.rio_outstanding          = 1;
+        slot.owner                      = &native;
+        slot.index                      = 0;
+        slot.outstanding                = 1;
+        slot.rio_outstanding            = 1;
+        slot.send_outstanding           = true;
+        slot.attempt_bytes              = 4;
+        slot.send_offset                = bad_offset ? 5U : 3U;
+        slot.send_buffer.Length         = 1;
+        slot.send_request.operation     = cec_engine_operation::send;
+        slot.send_request.sequence      = 1;
+        slot.send_request.posted_length = 1;
+        slot.send_request.token         = cec_operation_token_encode(0, cec_engine_operation::send, 0, 1);
         RIORESULT result{};
         result.SocketContext            = bad_socket_context ? 0U : reinterpret_cast<ULONG_PTR>(&slot);
-        result.RequestContext           = reinterpret_cast<ULONG_PTR>(&slot.send_request);
+        result.RequestContext           = static_cast<ULONG_PTR>(slot.send_request.token);
         result.BytesTransferred         = valid || bad_offset ? 1U : 2U;
         const cec_completion completion = cec_native_retire_rio(&native, result);
         return valid && completion.kind == cec_completion_kind::sent && slot.send_offset == 4 &&
-                       slot.outstanding == 0 && native.rio_outstanding == 0 ?
+                       slot.outstanding == 0 && native.rio_outstanding == 0 && slot.send_request.token == 0 ?
                    0 :
                    1;
     }
     if (std::wcscmp(argv[1], L"completion_slot_identity") == 0) {
         cec_native_worker              native{};
         std::array<cec_native_slot, 2> slots{};
-        native.slots                = slots.data();
-        native.session_count        = 2;
-        native.rio_outstanding      = 1;
-        slots[0].owner              = &native;
-        slots[0].index              = 1;
-        slots[0].outstanding        = 1;
-        slots[0].rio_outstanding    = 1;
-        slots[0].send_outstanding   = true;
-        slots[0].send_request       = { &slots[0], cec_engine_operation::send };
-        slots[0].send_buffer.Length = 1;
+        native.slots                        = slots.data();
+        native.session_count                = 2;
+        native.rio_outstanding              = 1;
+        slots[0].owner                      = &native;
+        slots[0].index                      = 1;
+        slots[0].outstanding                = 1;
+        slots[0].rio_outstanding            = 1;
+        slots[0].send_outstanding           = true;
+        slots[0].send_request.operation     = cec_engine_operation::send;
+        slots[0].send_request.sequence      = 1;
+        slots[0].send_request.posted_length = 1;
+        slots[0].send_request.token         = cec_operation_token_encode(0, cec_engine_operation::send, 0, 1);
+        slots[0].send_buffer.Length         = 1;
         RIORESULT result{};
         result.SocketContext    = reinterpret_cast<ULONG_PTR>(&slots[0]);
-        result.RequestContext   = reinterpret_cast<ULONG_PTR>(&slots[0].send_request);
+        result.RequestContext   = static_cast<ULONG_PTR>(slots[0].send_request.token);
         result.BytesTransferred = 1;
+        (void) cec_native_retire_rio(&native, result);
+        return 1;
+    }
+    if (std::wcscmp(argv[1], L"completion_stale_generation") == 0) {
+        // The token was posted by generation one and the slot is now generation two: the lane matches
+        // the token, so only the generation carried by value inside the context can reject it.
+        cec_native_worker native{};
+        cec_native_slot   slot{};
+        native.slots                    = &slot;
+        native.session_count            = 1;
+        native.rio_outstanding          = 1;
+        slot.owner                      = &native;
+        slot.index                      = 0;
+        slot.generation                 = 2;
+        slot.outstanding                = 1;
+        slot.rio_outstanding            = 1;
+        slot.send_outstanding           = true;
+        slot.attempt_bytes              = 4;
+        slot.send_offset                = 0;
+        slot.send_buffer.Length         = 1;
+        slot.send_request.operation     = cec_engine_operation::send;
+        slot.send_request.sequence      = 1;
+        slot.send_request.posted_length = 1;
+        slot.send_request.token         = cec_operation_token_encode(0, cec_engine_operation::send, 1, 1);
+        RIORESULT result{};
+        result.SocketContext  = reinterpret_cast<ULONG_PTR>(&slot);
+        result.RequestContext = static_cast<ULONG_PTR>(slot.send_request.token);
+        (void) cec_native_retire_rio(&native, result);
+        return 1;
+    }
+    if (std::wcscmp(argv[1], L"completion_stale_token") == 0) {
+        // A completion whose token does not match the posted lane: a stale retirement or a duplicate.
+        cec_native_worker native{};
+        cec_native_slot   slot{};
+        native.slots                    = &slot;
+        native.session_count            = 1;
+        native.rio_outstanding          = 1;
+        slot.owner                      = &native;
+        slot.index                      = 0;
+        slot.outstanding                = 1;
+        slot.rio_outstanding            = 1;
+        slot.send_outstanding           = true;
+        slot.attempt_bytes              = 4;
+        slot.send_offset                = 0;
+        slot.send_buffer.Length         = 1;
+        slot.send_request.operation     = cec_engine_operation::send;
+        slot.send_request.sequence      = 2;
+        slot.send_request.posted_length = 1;
+        slot.send_request.token         = cec_operation_token_encode(0, cec_engine_operation::send, 0, 2);
+        RIORESULT result{};
+        result.SocketContext  = reinterpret_cast<ULONG_PTR>(&slot);
+        result.RequestContext = static_cast<ULONG_PTR>(cec_operation_token_encode(0, cec_engine_operation::send, 0, 1));
         (void) cec_native_retire_rio(&native, result);
         return 1;
     }

@@ -602,8 +602,10 @@ static bool cec_engine_worker_initialize(cec_engine_worker*                  wor
         worker->core.sessions[index]       = cec_session_core{};
         worker->core.sessions[index].index = index;
         cec_native_slot* slot              = &worker->transport.native.slots[index];
-        slot->receive_request              = cec_engine_request{ slot, cec_engine_operation::receive };
-        slot->send_request                 = cec_engine_request{ slot, cec_engine_operation::send };
+        slot->receive_request              = cec_engine_request{};
+        slot->receive_request.operation    = cec_engine_operation::receive;
+        slot->send_request                 = cec_engine_request{};
+        slot->send_request.operation       = cec_engine_operation::send;
         slot->send_buffer.BufferId         = resources->registrations[index * 2U].get();
         slot->receive_buffer.BufferId      = resources->registrations[index * 2U + 1U].get();
         char* send_data                    = worker->transport.native.memory + index * 2U * maximum_attempt_bytes;
